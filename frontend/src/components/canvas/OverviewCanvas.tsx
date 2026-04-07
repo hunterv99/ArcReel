@@ -1,0 +1,476 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ImagePlus, RefreshCw, Trash2, Upload } from "lucide-react";
+import type { ProjectData } from "@/types";
+import { API } from "@/api";
+import { useProjectsStore } from "@/stores/projects-store";
+import { useAppStore } from "@/stores/app-store";
+import { useCostStore } from "@/stores/cost-store";
+import { PreviewableImageFrame } from "@/components/ui/PreviewableImageFrame";
+import { formatCost, totalBreakdown } from "@/utils/cost-format";
+
+import { WelcomeCanvas } from "./WelcomeCanvas";
+
+interface OverviewCanvasProps {
+  projectName: string;
+  projectData: ProjectData | null;
+}
+
+export function OverviewCanvas({ projectName, projectData }: OverviewCanvasProps) {
+  const styleImageFp = useProjectsStore(
+    (s) => projectData?.style_image ? s.getAssetFingerprint(projectData.style_image) : null,
+  );
+  const projectTotals = useCostStore((s) => s.costData?.project_totals);
+  const getEpisodeCost = useCostStore((s) => s.getEpisodeCost);
+  const costLoading = useCostStore((s) => s.loading);
+  const costError = useCostStore((s) => s.error);
+  const debouncedFetch = useCostStore((s) => s.debouncedFetch);
+
+  useEffect(() => {
+    if (!projectName) return;
+    debouncedFetch(projectName);
+  }, [projectName, projectData?.episodes, debouncedFetch]);
+
+  const [regenerating, setRegenerating] = useState(false);
+  const [uploadingStyleImage, setUploadingStyleImage] = useState(false);
+  const [deletingStyleImage, setDeletingStyleImage] = useState(false);
+  const [savingStyleDescription, setSavingStyleDescription] = useState(false);
+  const [styleDescriptionDraft, setStyleDescriptionDraft] = useState(
+    projectData?.style_description ?? "",
+  );
+  const styleInputRef = useRef<HTMLInputElement>(null);
+
+  const refreshProject = useCallback(
+    async () => {
+      const res = await API.getProject(projectName);
+      useProjectsStore.getState().setCurrentProject(
+        projectName,
+        res.project,
+        res.scripts ?? {},
+        res.asset_fingerprints,
+      );
+    },
+    [projectName],
+  );
+
+  useEffect(() => {
+    setStyleDescriptionDraft(projectData?.style_description ?? "");
+  }, [projectData?.style_description]);
+
+  const handleUpload = useCallback(
+    async (file: File) => {
+      await API.uploadFile(projectName, "source", file);
+      useAppStore.getState().pushToast(`Tải lên tệp nguồn "${file.name}" thành công`, "success");
+    },
+    [projectName],
+  );
+
+  const handleAnalyze = useCallback(async () => {
+    await API.generateOverview(projectName);
+    await refreshProject();
+  }, [projectName, refreshProject]);
+
+  const handleRegenerate = useCallback(async () => {
+    setRegenerating(true);
+    try {
+      await API.generateOverview(projectName);
+      await refreshProject();
+      useAppStore.getState().pushToast("Đã tạo lại tổng quan dự án", "success");
+    } catch (err) {
+      useAppStore
+        .getState()
+        .pushToast(`Tạo lại thất bại: ${(err as Error).message}`, "error");
+    } finally {
+      setRegenerating(false);
+    }
+  }, [projectName, refreshProject]);
+
+  const handleStyleImageChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+
+      setUploadingStyleImage(true);
+      try {
+        await API.uploadStyleImage(projectName, file);
+        await refreshProject();
+        useAppStore.getState().pushToast("Đã cập nhật ảnh tham khảo phong cách", "success");
+      } catch (err) {
+        useAppStore
+          .getState()
+          .pushToast(`Tải lên thất bại: ${(err as Error).message}`, "error");
+      } finally {
+        setUploadingStyleImage(false);
+      }
+    },
+    [projectName, refreshProject],
+  );
+
+  const handleDeleteStyleImage = useCallback(async () => {
+    if (deletingStyleImage || !projectData?.style_image) return;
+    if (!confirm("Bạn có chắc chắn muốn xóa ảnh tham khảo phong cách hiện tại không?")) return;
+
+    setDeletingStyleImage(true);
+    try {
+      await API.deleteStyleImage(projectName);
+      await refreshProject();
+      useAppStore.getState().pushToast("Đã xóa ảnh tham khảo phong cách", "success");
+    } catch (err) {
+      useAppStore
+        .getState()
+        .pushToast(`Xóa thất bại: ${(err as Error).message}`, "error");
+    } finally {
+      setDeletingStyleImage(false);
+    }
+  }, [deletingStyleImage, projectData?.style_image, projectName, refreshProject]);
+
+  const handleSaveStyleDescription = useCallback(async () => {
+    if (savingStyleDescription) return;
+    setSavingStyleDescription(true);
+    try {
+      await API.updateStyleDescription(projectName, styleDescriptionDraft.trim());
+      await refreshProject();
+      useAppStore.getState().pushToast("Đã lưu mô tả phong cách", "success");
+    } catch (err) {
+      useAppStore
+        .getState()
+        .pushToast(`Lưu thất bại: ${(err as Error).message}`, "error");
+    } finally {
+      setSavingStyleDescription(false);
+    }
+  }, [projectName, refreshProject, savingStyleDescription, styleDescriptionDraft]);
+
+  if (!projectData) {
+    return (
+      <div className="flex h-full items-center justify-center text-gray-500">
+        Đang tải dữ liệu dự án...
+      </div>
+    );
+  }
+
+  const status = projectData.status;
+  const overview = projectData.overview;
+  const styleImageUrl = projectData.style_image
+    ? API.getFileUrl(projectName, projectData.style_image, styleImageFp)
+    : null;
+  const styleDescriptionDirty =
+    styleDescriptionDraft !== (projectData.style_description ?? "");
+  const showWelcome = !overview && (projectData.episodes?.length ?? 0) === 0;
+  const focusRing = "focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900";
+  const projectStyleCard = (
+    <section className="rounded-2xl border border-gray-800 bg-gray-900/90 p-4 sm:p-5">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <h3 className="text-sm font-semibold text-gray-200">Phong cách dự án</h3>
+          <p className="max-w-2xl text-xs leading-5 text-gray-500">
+            Ảnh tham khảo sẽ tham gia vào quá trình tạo hình ảnh sau này; mô tả phong cách dùng để bổ sung các quy tắc thị giác, hiệu chỉnh tông màu tổng thể, chất liệu và phong thái khung hình.
+          </p>
+        </div>
+        <div className="inline-flex items-center rounded-full border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300">
+          {projectData.style || "Chưa thiết lập nhãn phong cách"}
+        </div>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]">
+        <div className="space-y-3">
+          {styleImageUrl ? (
+            <PreviewableImageFrame src={styleImageUrl} alt="Ảnh tham khảo phong cách dự án">
+              <div className="overflow-hidden rounded-xl border border-gray-700 bg-gray-950/70">
+                <img
+                  src={styleImageUrl}
+                  alt="Ảnh tham khảo phong cách dự án"
+                  className="aspect-[4/3] w-full object-cover"
+                />
+              </div>
+            </PreviewableImageFrame>
+          ) : (
+            <button
+              type="button"
+              onClick={() => styleInputRef.current?.click()}
+              disabled={uploadingStyleImage}
+              className={`flex aspect-[4/3] w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-gray-700 bg-gray-950/40 px-4 text-sm text-gray-500 transition-colors hover:border-gray-500 hover:text-gray-300 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+            >
+              <Upload className="h-4 w-4" />
+              <span>{uploadingStyleImage ? "Đang tải lên..." : "Tải lên ảnh tham khảo phong cách"}</span>
+              <span className="text-xs text-gray-600">Hỗ trợ PNG / JPG / WEBP</span>
+            </button>
+          )}
+
+          <div className="rounded-xl border border-gray-800 bg-gray-950/40 p-3">
+            <p className="text-xs font-medium text-gray-400">Hướng dẫn sử dụng</p>
+            <p className="mt-1 text-sm leading-6 text-gray-300">
+              {styleImageUrl
+                ? "Ảnh tham khảo hiện tại sẽ làm cơ sở thị giác thống nhất, dùng cho tạo hình nhân vật, phân cảnh và video."
+                : "Chưa liên kết ảnh tham khảo cấp dự án, bạn có thể tải lên một ảnh mẫu phong cách mục tiêu làm cơ sở thống nhất."}
+            </p>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => styleInputRef.current?.click()}
+                disabled={uploadingStyleImage}
+                className={`inline-flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-2 text-sm text-gray-300 transition-colors hover:border-gray-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              >
+                <ImagePlus className="h-4 w-4" />
+                {styleImageUrl ? "Thay thế ảnh tham khảo" : "Tải lên ảnh tham khảo"}
+              </button>
+              {styleImageUrl && (
+                <button
+                  type="button"
+                  onClick={() => void handleDeleteStyleImage()}
+                  disabled={deletingStyleImage}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-300 transition-colors hover:border-red-400/50 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {deletingStyleImage ? "Đang xóa..." : "Xóa ảnh tham khảo"}
+                </button>
+              )}
+            </div>
+          </div>
+
+          <input
+            ref={styleInputRef}
+            type="file"
+            accept=".png,.jpg,.jpeg,.webp"
+            onChange={handleStyleImageChange}
+            className="hidden"
+            aria-label="Tải lên ảnh tham khảo phong cách"
+          />
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-950/35 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label htmlFor="style-description-textarea" className="text-xs font-medium text-gray-400">Mô tả phong cách</label>
+            <span className="text-[11px] text-gray-600">
+              {styleDescriptionDraft.trim().length} chữ
+            </span>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-gray-500">
+            Sau khi tải lên ảnh tham khảo, hệ thống sẽ tự động phân tích và điền mô tả phong cách; bạn cũng có thể tiếp tục hiệu chỉnh thủ công.
+          </p>
+
+          <textarea
+            id="style-description-textarea"
+            value={styleDescriptionDraft}
+            onChange={(e) => setStyleDescriptionDraft(e.target.value)}
+            rows={8}
+            className={`mt-3 min-h-44 w-full rounded-xl border border-gray-700 bg-gray-800/80 px-4 py-3 text-sm leading-relaxed text-gray-200 placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500`}
+            placeholder="Sau khi tải lên ảnh tham khảo phong cách, hệ thống sẽ tự động phân tích và điền mô tả phong cách; cũng có thể chỉnh sửa thủ công."
+          />
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-xs leading-5 text-gray-500">
+              {styleImageUrl
+                ? "Khuyến nghị sử dụng mô tả phong cách để bổ sung ánh sáng, màu sắc, chất liệu và ngôn ngữ khung hình."
+                : "Khi không có ảnh tham khảo, bạn cũng có thể sử dụng văn bản để xác định rõ phong cách hình ảnh và các ràng buộc thẩm mỹ."}
+            </p>
+            {styleDescriptionDirty && (
+              <button
+                type="button"
+                onClick={() => void handleSaveStyleDescription()}
+                disabled={savingStyleDescription}
+                className={`rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+              >
+                {savingStyleDescription ? "Đang lưu..." : "Lưu mô tả phong cách"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="space-y-6 p-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-100">{projectData.title}</h1>
+          <p className="mt-1 text-sm text-gray-400">
+            {projectData.content_mode === "narration"
+              ? "Chế độ Kể chuyện + Hình ảnh"
+              : "Chế độ Phim hoạt hình"}{" "}
+            · {projectData.style || "Chưa thiết lập phong cách"}
+          </p>
+        </div>
+
+        {showWelcome ? (
+          <WelcomeCanvas
+            projectName={projectName}
+            projectTitle={projectData.title}
+            onUpload={handleUpload}
+            onAnalyze={handleAnalyze}
+          />
+        ) : (
+          <>
+            {overview && (
+              <div className="space-y-3 rounded-xl border border-gray-800 bg-gray-900 p-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-300">Tổng quan dự án</h3>
+                  <button
+                    type="button"
+                    onClick={() => void handleRegenerate()}
+                    disabled={regenerating}
+                    className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 transition-colors hover:bg-gray-800 hover:text-gray-200 disabled:cursor-not-allowed disabled:opacity-50 ${focusRing}`}
+                    title="Tạo lại tổng quan"
+                  >
+                    <RefreshCw
+                      className={`h-3 w-3 ${regenerating ? "animate-spin" : ""}`}
+                    />
+                    <span>{regenerating ? "Đang tạo..." : "Tạo lại"}</span>
+                  </button>
+                </div>
+                <p className="text-sm text-gray-400">{overview.synopsis}</p>
+                <div className="flex gap-4 text-xs text-gray-500">
+                  <span>Thể loại: {overview.genre}</span>
+                  <span>Chủ đề: {overview.theme}</span>
+                </div>
+              </div>
+            )}
+
+            {status && (
+              <div className="grid grid-cols-2 gap-3">
+                {(["characters", "clues"] as const).map(
+                  (key) => {
+                    const cat = status[key] as
+                      | { total: number; completed: number }
+                      | undefined;
+                    if (!cat) return null;
+                    const pct =
+                      cat.total > 0
+                        ? Math.round((cat.completed / cat.total) * 100)
+                        : 0;
+                    const labels: Record<string, string> = {
+                      characters: "Nhân vật",
+                      clues: "Manh mối",
+                    };
+                    return (
+                      <div
+                        key={key}
+                        className="rounded-lg border border-gray-800 bg-gray-900 p-3"
+                      >
+                        <div className="mb-1 flex justify-between text-xs">
+                          <span className="text-gray-400">{labels[key]}</span>
+                          <span className="text-gray-300">
+                            {cat.completed}/{cat.total}
+                          </span>
+                        </div>
+                        <div
+                          className="h-1.5 overflow-hidden rounded-full bg-gray-800"
+                          role="progressbar"
+                          aria-valuenow={pct}
+                          aria-valuemin={0}
+                          aria-valuemax={100}
+                        >
+                          <div
+                            className="h-full rounded-full bg-indigo-500"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  },
+                )}
+              </div>
+            )}
+
+            {costLoading && (
+              <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+                <p className="text-sm text-gray-500 animate-pulse">Đang tính toán chi phí...</p>
+              </div>
+            )}
+            {costError && (
+              <div className="rounded-xl border border-red-900/50 bg-red-950/30 p-4">
+                <p className="text-sm text-red-400">Ước tính chi phí thất bại: {costError}</p>
+              </div>
+            )}
+
+            {projectTotals && (
+              <div className="rounded-xl border border-gray-800 bg-gray-900 p-4 tabular-nums">
+                <p className="mb-3 text-sm font-semibold text-gray-300">Tổng chi phí dự án</p>
+                <dl className="flex flex-wrap items-start justify-between gap-6">
+                  <div className="min-w-0">
+                    <dt className="mb-1 text-[11px] text-gray-600">Ước tính</dt>
+                    <dd className="text-sm text-gray-400">
+                      <span className="text-gray-500">Phân cảnh </span>
+                      <span className="text-gray-200">{formatCost(projectTotals.estimate.image)}</span>
+                      <span className="ml-3 text-gray-500">Video </span>
+                      <span className="text-gray-200">{formatCost(projectTotals.estimate.video)}</span>
+                      <span className="ml-3 text-gray-500">Tổng cộng </span>
+                      <span className="font-semibold text-amber-400">{formatCost(totalBreakdown(projectTotals.estimate))}</span>
+                    </dd>
+                  </div>
+                  <div role="separator" className="h-8 w-px bg-gray-800" />
+                  <div className="min-w-0">
+                    <dt className="mb-1 text-[11px] text-gray-600">Thực tế</dt>
+                    <dd className="text-sm text-gray-400">
+                      <span className="text-gray-500">Phân cảnh </span>
+                      <span className="text-gray-200">{formatCost(projectTotals.actual.image)}</span>
+                      <span className="ml-3 text-gray-500">Video </span>
+                      <span className="text-gray-200">{formatCost(projectTotals.actual.video)}</span>
+                      {projectTotals.actual.character_and_clue && (
+                        <>
+                          <span className="ml-3 text-gray-500">Nhân vật/Manh mối </span>
+                          <span className="text-gray-200">{formatCost(projectTotals.actual.character_and_clue)}</span>
+                        </>
+                      )}
+                      <span className="ml-3 text-gray-500">Tổng cộng </span>
+                      <span className="font-semibold text-emerald-400">{formatCost(totalBreakdown(projectTotals.actual))}</span>
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-gray-300">Tập phim</h3>
+              {(projectData.episodes?.length ?? 0) === 0 ? (
+                <p className="text-sm text-gray-500">
+                  Chưa có tập phim. Sử dụng trợ lý AI để tạo kịch bản.
+                </p>
+              ) : (
+                (projectData.episodes ?? []).map((ep) => {
+                  const epCost = getEpisodeCost(ep.episode);
+                  return (
+                    <div
+                      key={ep.episode}
+                      className="flex flex-wrap items-center gap-3 rounded-lg border border-gray-800 bg-gray-900 px-4 py-2.5 tabular-nums"
+                    >
+                      <span className="font-mono text-xs text-gray-400">
+                        E{ep.episode}
+                      </span>
+                      <span className="text-sm text-gray-200">{ep.title}</span>
+                      <span className="text-xs text-gray-500">
+                        {ep.scenes_count ?? "?"} đoạn · {ep.status ?? "draft"}
+                      </span>
+                      {epCost && (
+                        <span className="ml-auto flex min-w-0 flex-shrink flex-wrap gap-4 text-xs text-gray-400">
+                          <span>
+                            <span className="text-gray-500">Ước tính </span>
+                            <span className="text-gray-500">Phân cảnh </span><span className="text-gray-300">{formatCost(epCost.totals.estimate.image)}</span>
+                            <span className="ml-2 text-gray-500">Video </span><span className="text-gray-300">{formatCost(epCost.totals.estimate.video)}</span>
+                            <span className="ml-2 text-gray-500">Tổng cộng </span><span className="font-medium text-amber-400">{formatCost(totalBreakdown(epCost.totals.estimate))}</span>
+                          </span>
+                          <span className="text-gray-700">|</span>
+                          <span>
+                            <span className="text-gray-500">Thực tế </span>
+                            <span className="text-gray-500">Phân cảnh </span><span className="text-gray-300">{formatCost(epCost.totals.actual.image)}</span>
+                            <span className="ml-2 text-gray-500">Video </span><span className="text-gray-300">{formatCost(epCost.totals.actual.video)}</span>
+                            <span className="ml-2 text-gray-500">Tổng cộng </span><span className="font-medium text-emerald-400">{formatCost(totalBreakdown(epCost.totals.actual))}</span>
+                          </span>
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </>
+        )}
+
+        {projectStyleCard}
+
+        <div className="h-8" />
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,123 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useAssistantSession } from "@/hooks/useAssistantSession";
+import { useAppStore } from "@/stores/app-store";
+import { useAssistantStore } from "@/stores/assistant-store";
+import { useProjectsStore } from "@/stores/projects-store";
+import { UI_LAYERS } from "@/utils/ui-layers";
+import { AgentCopilot } from "./AgentCopilot";
+
+vi.mock("@/hooks/useAssistantSession", () => ({
+  useAssistantSession: vi.fn(),
+}));
+
+vi.mock("./ContextBanner", () => ({
+  ContextBanner: () => <div data-testid="context-banner" />,
+}));
+
+vi.mock("./SlashCommandMenu", () => ({
+  SlashCommandMenu: vi.fn(() => null),
+}));
+
+vi.mock("./chat/ChatMessage", () => ({
+  ChatMessage: ({ message }: { message: { type: string } }) => (
+    <div data-testid="chat-message">{message.type}</div>
+  ),
+}));
+
+const mockedUseAssistantSession = vi.mocked(useAssistantSession);
+
+function makePendingQuestion() {
+  return {
+    question_id: "q-1",
+    questions: [
+      {
+        header: "Đầu ra",
+        question: "Định dạng đầu ra là gì?",
+        multiSelect: false,
+        options: [
+          { label: "Tóm tắt", description: "Đầu ra ngắn gọn" },
+          { label: "Chi tiết", description: "Mô tả đầy đủ" },
+        ],
+      },
+    ],
+  };
+}
+
+describe("AgentCopilot", () => {
+  const sendMessage = vi.fn();
+  const answerQuestion = vi.fn();
+  const interrupt = vi.fn();
+  const createNewSession = vi.fn();
+  const switchSession = vi.fn();
+  const deleteSession = vi.fn();
+
+  beforeEach(() => {
+    useAssistantStore.setState(useAssistantStore.getInitialState(), true);
+    useProjectsStore.setState(useProjectsStore.getInitialState(), true);
+    useAppStore.setState(useAppStore.getInitialState(), true);
+    vi.clearAllMocks();
+
+    useProjectsStore.getState().setCurrentProject("demo", null);
+    mockedUseAssistantSession.mockReturnValue({
+      sendMessage,
+      answerQuestion,
+      interrupt,
+      createNewSession,
+      switchSession,
+      deleteSession,
+    });
+  });
+
+  it("renders the pending-question wizard and disables normal sending", () => {
+    useAssistantStore.setState({
+      pendingQuestion: makePendingQuestion(),
+      skills: [{ name: "plan", description: "Plan", scope: "project", path: "/tmp/plan" }],
+    });
+
+    render(<AgentCopilot />);
+
+    expect(screen.getByText("Cần bạn lựa chọn")).toBeInTheDocument();
+    expect(screen.getByLabelText("Nhập liệu trợ lý")).toBeDisabled();
+    expect(screen.getByLabelText("Gửi tin nhắn")).toBeDisabled();
+    expect(screen.getByPlaceholderText("Vui lòng trả lời câu hỏi bên trên trước")).toBeInTheDocument();
+  });
+
+  it("submits wizard answers through answerQuestion", () => {
+    useAssistantStore.setState({
+      pendingQuestion: makePendingQuestion(),
+    });
+
+    render(<AgentCopilot />);
+
+    fireEvent.click(screen.getByLabelText("Tóm tắt"));
+    fireEvent.click(screen.getByRole("button", { name: "Hoàn tất và gửi" }));
+
+    expect(answerQuestion).toHaveBeenCalledWith("q-1", {
+      "Định dạng đầu ra là gì?": "Tóm tắt",
+    });
+  });
+
+  it("keeps assistant root isolated and uses local popover layer for session history", () => {
+    useAssistantStore.setState({
+      sessions: [
+        {
+          id: "session-1",
+          project_name: "demo",
+          title: "Hội thoại hiện tại",
+          status: "idle",
+          created_at: "2026-02-01T00:00:00Z",
+          updated_at: "2026-02-01T00:00:00Z",
+        },
+      ],
+      currentSessionId: "session-1",
+    });
+
+    const { container } = render(<AgentCopilot />);
+
+    expect(container.firstElementChild).toHaveClass("isolate");
+
+    fireEvent.click(screen.getByTitle("Chuyển hội thoại"));
+    expect(document.querySelector(`.${UI_LAYERS.assistantLocalPopover}`)).toBeTruthy();
+  });
+});

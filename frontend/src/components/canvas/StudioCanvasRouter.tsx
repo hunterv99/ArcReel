@@ -1,0 +1,357 @@
+import { useState, useCallback, useMemo } from "react";
+import { Route, Switch, Redirect, useLocation } from "wouter";
+import { useProjectsStore } from "@/stores/projects-store";
+import { useAppStore } from "@/stores/app-store";
+import { useTasksStore } from "@/stores/tasks-store";
+import { LorebookGallery } from "./lorebook/LorebookGallery";
+import { TimelineCanvas } from "./timeline/TimelineCanvas";
+import { OverviewCanvas } from "./OverviewCanvas";
+import { SourceFileViewer } from "./SourceFileViewer";
+import { AddCharacterForm } from "./lorebook/AddCharacterForm";
+import { AddClueForm } from "./lorebook/AddClueForm";
+import { API } from "@/api";
+import { buildEntityRevisionKey } from "@/utils/project-changes";
+import type { Clue } from "@/types";
+
+// ---------------------------------------------------------------------------
+// StudioCanvasRouter — reads Zustand store data and renders the correct
+// canvas view based on the nested route within /app/projects/:projectName.
+// ---------------------------------------------------------------------------
+
+export function StudioCanvasRouter() {
+  const { currentProjectData, currentProjectName, currentScripts } =
+    useProjectsStore();
+
+  const [addingCharacter, setAddingCharacter] = useState(false);
+  const [addingClue, setAddingClue] = useState(false);
+
+  // Phái sinh trạng thái loading từ hàng đợi tác vụ (thay thế state cục bộ)
+  const tasks = useTasksStore((s) => s.tasks);
+  const generatingCharacterNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const t of tasks) {
+      if (
+        t.task_type === "character" &&
+        t.project_name === currentProjectName &&
+        (t.status === "queued" || t.status === "running")
+      ) {
+        names.add(t.resource_id);
+      }
+    }
+    return names;
+  }, [tasks, currentProjectName]);
+  const generatingClueNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const t of tasks) {
+      if (
+        t.task_type === "clue" &&
+        t.project_name === currentProjectName &&
+        (t.status === "queued" || t.status === "running")
+      ) {
+        names.add(t.resource_id);
+      }
+    }
+    return names;
+  }, [tasks, currentProjectName]);
+
+  // Làm mới dữ liệu dự án
+  const refreshProject = useCallback(async (invalidateKeys: string[] = []) => {
+    if (!currentProjectName) return;
+    try {
+      const res = await API.getProject(currentProjectName);
+      useProjectsStore.getState().setCurrentProject(
+        currentProjectName,
+        res.project,
+        res.scripts ?? {},
+        res.asset_fingerprints,
+      );
+      if (invalidateKeys.length > 0) {
+        useAppStore.getState().invalidateEntities(invalidateKeys);
+      }
+    } catch {
+      // Thất bại trong im lặng
+    }
+  }, [currentProjectName]);
+
+  // ---- Timeline action callbacks ----
+  // These receive scriptFile from TimelineCanvas so they always use the active episode's script.
+  const handleUpdatePrompt = useCallback(async (segmentId: string, field: string, value: unknown, scriptFile?: string) => {
+    if (!currentProjectName) return;
+    const mode = currentProjectData?.content_mode ?? "narration";
+    try {
+      if (mode === "drama") {
+        await API.updateScene(currentProjectName, segmentId, scriptFile ?? "", { [field]: value });
+      } else {
+        await API.updateSegment(currentProjectName, segmentId, { script_file: scriptFile, [field]: value });
+      }
+      await refreshProject();
+    } catch (err) {
+      useAppStore.getState().pushToast(`Cập nhật Prompt thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, currentProjectData, refreshProject]);
+
+  const handleGenerateStoryboard = useCallback(async (segmentId: string, scriptFile?: string) => {
+    if (!currentProjectName || !currentScripts) return;
+    const resolvedFile = scriptFile ?? Object.keys(currentScripts)[0];
+    if (!resolvedFile) return;
+    const script = currentScripts[resolvedFile];
+    if (!script) return;
+    const segments = ("segments" in script ? script.segments : undefined) ??
+                     ("scenes" in script ? script.scenes : undefined) ?? [];
+    const seg = segments.find((s) => {
+      const id = "segment_id" in s ? s.segment_id : (s as { scene_id?: string }).scene_id ?? "";
+      return id === segmentId;
+    });
+    const prompt = seg?.image_prompt ?? "";
+    try {
+      await API.generateStoryboard(currentProjectName, segmentId, prompt as string | Record<string, unknown>, resolvedFile);
+      useAppStore.getState().pushToast(`Đã gửi tác vụ tạo phân cảnh "${segmentId}"`, "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(`Tạo phân cảnh thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, currentScripts]);
+
+  const handleGenerateVideo = useCallback(async (segmentId: string, scriptFile?: string) => {
+    if (!currentProjectName || !currentScripts) return;
+    const resolvedFile = scriptFile ?? Object.keys(currentScripts)[0];
+    if (!resolvedFile) return;
+    const script = currentScripts[resolvedFile];
+    if (!script) return;
+    const segments = ("segments" in script ? script.segments : undefined) ??
+                     ("scenes" in script ? script.scenes : undefined) ?? [];
+    const seg = segments.find((s) => {
+      const id = "segment_id" in s ? s.segment_id : (s as { scene_id?: string }).scene_id ?? "";
+      return id === segmentId;
+    });
+    const prompt = seg?.video_prompt ?? "";
+    const duration = seg?.duration_seconds ?? 4;
+    try {
+      await API.generateVideo(currentProjectName, segmentId, prompt as string | Record<string, unknown>, resolvedFile, duration);
+      useAppStore.getState().pushToast(`Đã gửi tác vụ tạo video "${segmentId}"`, "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(`Tạo video thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, currentScripts]);
+
+  // ---- Character CRUD callbacks ----
+  const handleSaveCharacter = useCallback(async (
+    name: string,
+    payload: {
+      description: string;
+      voiceStyle: string;
+      referenceFile?: File | null;
+    },
+  ) => {
+    if (!currentProjectName) return;
+    try {
+      await API.updateCharacter(currentProjectName, name, {
+        description: payload.description,
+        voice_style: payload.voiceStyle,
+      });
+
+      if (payload.referenceFile) {
+        await API.uploadFile(
+          currentProjectName,
+          "character_ref",
+          payload.referenceFile,
+          name,
+        );
+      }
+
+      await refreshProject(
+        payload.referenceFile
+          ? [buildEntityRevisionKey("character", name)]
+          : [],
+      );
+      useAppStore.getState().pushToast(`Nhân vật "${name}" đã được cập nhật`, "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(`Cập nhật nhân vật thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, refreshProject]);
+
+  const handleGenerateCharacter = useCallback(async (name: string) => {
+    if (!currentProjectName) return;
+    try {
+      await API.generateCharacter(
+        currentProjectName,
+        name,
+        currentProjectData?.characters?.[name]?.description ?? "",
+      );
+      useAppStore
+        .getState()
+        .pushToast(`Đã gửi tác vụ tạo nhân vật "${name}"`, "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(`Gửi thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, currentProjectData]);
+
+  const handleAddCharacterSubmit = useCallback(async (
+    name: string,
+    description: string,
+    voiceStyle: string,
+    referenceFile?: File | null,
+  ) => {
+    if (!currentProjectName) return;
+    try {
+      await API.addCharacter(currentProjectName, name, description, voiceStyle);
+
+      if (referenceFile) {
+        await API.uploadFile(currentProjectName, "character_ref", referenceFile, name);
+      }
+
+      await refreshProject(
+        referenceFile
+          ? [buildEntityRevisionKey("character", name)]
+          : [],
+      );
+      setAddingCharacter(false);
+      useAppStore.getState().pushToast(`Nhân vật "${name}" đã được thêm`, "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(`Thêm thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, refreshProject]);
+
+  // ---- Clue CRUD callbacks ----
+  const handleUpdateClue = useCallback(async (name: string, updates: Partial<Clue>) => {
+    if (!currentProjectName) return;
+    try {
+      await API.updateClue(currentProjectName, name, updates);
+      await refreshProject();
+    } catch (err) {
+      useAppStore.getState().pushToast(`Cập nhật manh mối thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, refreshProject]);
+
+  const handleGenerateClue = useCallback(async (name: string) => {
+    if (!currentProjectName) return;
+    try {
+      await API.generateClue(
+        currentProjectName,
+        name,
+        currentProjectData?.clues?.[name]?.description ?? "",
+      );
+      useAppStore
+        .getState()
+        .pushToast(`Đã gửi tác vụ tạo manh mối "${name}"`, "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(`Gửi thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, currentProjectData]);
+
+  const handleAddClueSubmit = useCallback(async (name: string, clueType: string, description: string, importance: string) => {
+    if (!currentProjectName) return;
+    try {
+      await API.addClue(currentProjectName, name, clueType, description, importance);
+      await refreshProject();
+      setAddingClue(false);
+      useAppStore.getState().pushToast(`Manh mối "${name}" đã được thêm`, "success");
+    } catch (err) {
+      useAppStore.getState().pushToast(`Thêm thất bại: ${(err as Error).message}`, "error");
+    }
+  }, [currentProjectName, refreshProject]);
+
+  const handleRestoreAsset = useCallback(async () => {
+    await refreshProject();
+  }, [refreshProject]);
+
+  const [location] = useLocation();
+
+  if (!currentProjectName) {
+    return (
+      <div className="flex h-full items-center justify-center text-gray-500">
+        Đang tải...
+      </div>
+    );
+  }
+
+  return (
+    <Switch>
+      <Route path="/">
+        <OverviewCanvas
+          projectName={currentProjectName}
+          projectData={currentProjectData}
+        />
+      </Route>
+
+      <Route path="/lorebook">
+        <Redirect to="/characters" />
+      </Route>
+
+      {/* Characters & Clues share one LorebookGallery to avoid remount flash */}
+      {(location === "/characters" || location === "/clues") && (
+        <div className="p-4">
+          <LorebookGallery
+            projectName={currentProjectName}
+            characters={currentProjectData?.characters ?? {}}
+            clues={currentProjectData?.clues ?? {}}
+            mode={location === "/clues" ? "clues" : "characters"}
+            onSaveCharacter={handleSaveCharacter}
+            onUpdateClue={handleUpdateClue}
+            onGenerateCharacter={handleGenerateCharacter}
+            onGenerateClue={handleGenerateClue}
+            onRestoreCharacterVersion={handleRestoreAsset}
+            onRestoreClueVersion={handleRestoreAsset}
+            generatingCharacterNames={generatingCharacterNames}
+            generatingClueNames={generatingClueNames}
+            onAddCharacter={() => setAddingCharacter(true)}
+            onAddClue={() => setAddingClue(true)}
+          />
+          {addingCharacter && (
+            <AddCharacterForm
+              onSubmit={handleAddCharacterSubmit}
+              onCancel={() => setAddingCharacter(false)}
+            />
+          )}
+          {addingClue && (
+            <AddClueForm
+              onSubmit={handleAddClueSubmit}
+              onCancel={() => setAddingClue(false)}
+            />
+          )}
+        </div>
+      )}
+
+      <Route path="/source/:filename">
+        {(params) => (
+          <SourceFileViewer
+            projectName={currentProjectName}
+            filename={decodeURIComponent(params.filename)}
+          />
+        )}
+      </Route>
+
+      <Route path="/episodes/:episodeId">
+        {(params) => {
+          const epNum = parseInt(params.episodeId, 10);
+          const episode = currentProjectData?.episodes?.find(
+            (e) => e.episode === epNum,
+          );
+          const scriptFile = episode?.script_file?.replace(/^scripts\//, "");
+          const script = scriptFile
+            ? (currentScripts[scriptFile] ?? null)
+            : null;
+
+          const hasDraft = episode?.script_status === "segmented" || episode?.script_status === "generated";
+
+          return (
+            <TimelineCanvas
+              key={epNum}
+              projectName={currentProjectName}
+              episode={epNum}
+              episodeTitle={episode?.title}
+              hasDraft={hasDraft}
+              episodeScript={script}
+              scriptFile={scriptFile ?? undefined}
+              projectData={currentProjectData}
+              onUpdatePrompt={handleUpdatePrompt}
+              onGenerateStoryboard={handleGenerateStoryboard}
+              onGenerateVideo={handleGenerateVideo}
+              onRestoreStoryboard={handleRestoreAsset}
+              onRestoreVideo={handleRestoreAsset}
+            />
+          );
+        }}
+      </Route>
+    </Switch>
+  );
+}

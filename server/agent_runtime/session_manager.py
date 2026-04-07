@@ -1,0 +1,1995 @@
+"""
+Manages ClaudeSDKClient instances with background execution and reconnection support.
+"""
+
+import asyncio
+import json
+import logging
+import os
+import time
+from collections.abc import AsyncIterable, Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Optional
+from uuid import uuid4
+
+logger = logging.getLogger(__name__)
+
+from server.agent_runtime.message_utils import extract_plain_user_content
+from server.agent_runtime.models import SessionMeta, SessionStatus
+from server.agent_runtime.session_store import SessionMetaStore
+
+try:
+    from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+    from claude_agent_sdk.types import HookMatcher, PermissionResultAllow, SystemPromptPreset
+
+    try:
+        from claude_agent_sdk.types import PermissionResultDeny
+    except ImportError:
+        PermissionResultDeny = None
+    try:
+        from claude_agent_sdk import tag_session
+    except ImportError:
+        tag_session = None
+
+    SDK_AVAILABLE = True
+except ImportError:
+    ClaudeSDKClient = None
+    ClaudeAgentOptions = None
+    HookMatcher = None
+    PermissionResultAllow = None
+    PermissionResultDeny = None
+    tag_session = None
+    SDK_AVAILABLE = False
+
+try:
+    from lib.config.service import ConfigService
+    from lib.db import async_session_factory
+except ImportError:
+    async_session_factory = None  # type: ignore[assignment]
+    ConfigService = None  # type: ignore[assignment]
+
+
+class SessionCapacityError(Exception):
+    """Tất cả các slot đồng thời đã bị chiếm bởi các phiên đang chạy, không thể tạo kết nối mới."""
+
+    pass
+
+
+def _utc_now_iso() -> str:
+    """Return current UTC timestamp in ISO-8601 format."""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+@dataclass
+class PendingQuestion:
+    """Tracks a pending AskUserQuestion request."""
+
+    question_id: str
+    payload: dict[str, Any]
+    answer_future: asyncio.Future[dict[str, str]]
+
+
+@dataclass
+class ManagedSession:
+    """A managed ClaudeSDKClient session."""
+
+    session_id: str  # sdk_session_id (phiên đang tồn tại) hoặc UUID tạm thời (phiên mới đang đợi)
+    client: Any  # ClaudeSDKClient
+    status: SessionStatus = "idle"
+    project_name: str = ""  # 用于 _register_new_session
+    sdk_id_event: asyncio.Event = field(default_factory=asyncio.Event)
+    resolved_sdk_id: str | None = None  # consumer 设置，send_new_session 读取
+    message_buffer: list[dict[str, Any]] = field(default_factory=list)
+    subscribers: set[asyncio.Queue] = field(default_factory=set)
+    consumer_task: asyncio.Task | None = None
+    buffer_max_size: int = 100
+    pending_questions: dict[str, PendingQuestion] = field(default_factory=dict)
+    pending_user_echoes: list[str] = field(default_factory=list)
+    interrupt_requested: bool = False
+    last_activity: float | None = None  # updated on every send/receive
+    _cleanup_task: asyncio.Task | None = None  # current cleanup timer (idle TTL or terminal delay)
+
+    # Message types that must never be silently dropped from subscriber queues.
+    _CRITICAL_MESSAGE_TYPES = {"result", "runtime_status", "user", "assistant"}
+    # Transient types that are evicted first when buffer is full.
+    _TRANSIENT_BUFFER_TYPES = {"stream_event"}
+
+    def add_message(self, message: dict[str, Any]) -> None:
+        """Add message to buffer and notify subscribers."""
+        self.message_buffer.append(message)
+        if len(self.message_buffer) > self.buffer_max_size:
+            self._evict_oldest_buffer_entry()
+        self._broadcast_to_subscribers(message)
+
+    def _evict_oldest_buffer_entry(self) -> None:
+        """Evict one entry from buffer, preferring transient stream_events."""
+        for i, m in enumerate(self.message_buffer[:-1]):
+            if m.get("type") in self._TRANSIENT_BUFFER_TYPES:
+                self.message_buffer.pop(i)
+                return
+        self.message_buffer.pop(0)
+
+    def _broadcast_to_subscribers(self, message: dict[str, Any]) -> None:
+        """Push message to all subscriber queues, evicting non-critical on overflow."""
+        is_critical = message.get("type") in self._CRITICAL_MESSAGE_TYPES
+        stale_queues: list[asyncio.Queue] = []
+        for queue in self.subscribers:
+            if not self._try_enqueue(queue, message, is_critical):
+                stale_queues.append(queue)
+        for q in stale_queues:
+            # Drain the hopelessly full queue and inject a reconnect signal so
+            # the SSE consumer loop terminates instead of blocking forever.
+            self._drain_and_signal_reconnect(q)
+            self.subscribers.discard(q)
+
+    def _drain_and_signal_reconnect(self, queue: asyncio.Queue) -> None:
+        """Empty *queue* and push a reconnect signal so the SSE loop exits.
+
+        Uses a connection-level ``_queue_overflow`` type rather than
+        ``runtime_status`` so the SSE consumer can close the stream without
+        misrepresenting the session's actual status to the client.
+        """
+        while not queue.empty():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        try:
+            queue.put_nowait(
+                {
+                    "type": "_queue_overflow",
+                    "session_id": self.session_id,
+                }
+            )
+        except asyncio.QueueFull:
+            pass  # should never happen after drain
+
+    def _try_enqueue(self, queue: asyncio.Queue, message: dict[str, Any], is_critical: bool) -> bool:
+        """Try to put *message* into *queue*. Returns False if the queue should be discarded."""
+        try:
+            queue.put_nowait(message)
+            return True
+        except asyncio.QueueFull:
+            if not is_critical:
+                return True  # non-critical drop is acceptable
+        # Critical message on a full queue — evict one non-critical to make room.
+        self._evict_non_critical(queue)
+        try:
+            queue.put_nowait(message)
+            return True
+        except asyncio.QueueFull:
+            return False
+
+    @staticmethod
+    def _evict_non_critical(queue: asyncio.Queue) -> bool:
+        """Try to remove one non-critical message from *queue* to make room."""
+        temp: list[dict[str, Any]] = []
+        evicted = False
+        while not queue.empty():
+            try:
+                msg = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if not evicted and msg.get("type") not in ManagedSession._CRITICAL_MESSAGE_TYPES:
+                evicted = True  # drop this one
+                continue
+            temp.append(msg)
+        for msg in temp:
+            try:
+                queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                break
+        return evicted
+
+    def clear_buffer(self) -> None:
+        """Clear message buffer after session completes."""
+        self.message_buffer.clear()
+
+    def add_pending_question(self, payload: dict[str, Any]) -> PendingQuestion:
+        """Register a pending AskUserQuestion payload."""
+        question_id = str(payload.get("question_id") or f"aq_{uuid4().hex}")
+        payload["question_id"] = question_id
+        future: asyncio.Future[dict[str, str]] = asyncio.get_running_loop().create_future()
+        pending = PendingQuestion(
+            question_id=question_id,
+            payload=payload,
+            answer_future=future,
+        )
+        self.pending_questions[question_id] = pending
+        return pending
+
+    def resolve_pending_question(self, question_id: str, answers: dict[str, str]) -> bool:
+        """Resolve a pending AskUserQuestion with user answers."""
+        pending = self.pending_questions.pop(question_id, None)
+        if not pending:
+            return False
+        if not pending.answer_future.done():
+            pending.answer_future.set_result(answers)
+        return True
+
+    def cancel_pending_questions(self, reason: str = "session closed") -> None:
+        """Cancel all pending AskUserQuestion waiters."""
+        for pending in list(self.pending_questions.values()):
+            if not pending.answer_future.done():
+                pending.answer_future.set_exception(RuntimeError(reason))
+        self.pending_questions.clear()
+
+    def get_pending_question_payloads(self) -> list[dict[str, Any]]:
+        """Return unresolved AskUserQuestion payloads for reconnect snapshot."""
+        return [pending.payload for pending in self.pending_questions.values()]
+
+
+class SessionManager:
+    """Manages all active ClaudeSDKClient instances."""
+
+    DEFAULT_ALLOWED_TOOLS = [
+        "Skill",
+        "Task",
+        "Read",
+        "Write",
+        "Edit",
+        "Grep",
+        "Glob",
+        "AskUserQuestion",
+    ]
+    DEFAULT_SETTING_SOURCES = ["project"]
+    _INTERRUPT_TIMEOUT = 2.0
+    _DISCONNECT_TIMEOUT = 8.0
+    _TERMINATE_WAIT_TIMEOUT = 2.0
+    _KILL_WAIT_TIMEOUT = 2.0
+
+    # Bash is NOT in DEFAULT_ALLOWED_TOOLS — it is controlled by declarative
+    # allow rules in settings.json (whitelist approach, default deny).
+    # File access control for Read/Write/Edit/Glob/Grep uses PreToolUse hooks.
+    _PATH_TOOLS: dict[str, str] = {
+        "Read": "file_path",
+        "Write": "file_path",
+        "Edit": "file_path",
+        "Glob": "path",
+        "Grep": "path",
+    }
+    _WRITE_TOOLS = {"Write", "Edit"}
+
+    # Sentinel used in pending_user_echoes for image-only messages (no text).
+    # The SDK parser drops image blocks, so the replayed UserMessage arrives
+    # with empty content; this sentinel lets _is_duplicate_user_echo match it.
+    _IMAGE_ONLY_SENTINEL = "__image_only__"
+
+    # SDK message class name to type mapping
+    _MESSAGE_TYPE_MAP = {
+        "UserMessage": "user",
+        "AssistantMessage": "assistant",
+        "ResultMessage": "result",
+        "SystemMessage": "system",
+        "StreamEvent": "stream_event",
+        "TaskStartedMessage": "system",
+        "TaskProgressMessage": "system",
+        "TaskNotificationMessage": "system",
+    }
+
+    # Typed task message subtypes for precise classification
+    _TASK_MESSAGE_SUBTYPES = {
+        "TaskStartedMessage": "task_started",
+        "TaskProgressMessage": "task_progress",
+        "TaskNotificationMessage": "task_notification",
+    }
+
+    def __init__(
+        self,
+        project_root: Path,
+        data_dir: Path,
+        meta_store: SessionMetaStore,
+    ):
+        self.project_root = Path(project_root)
+        self.data_dir = Path(data_dir)
+        self.meta_store = meta_store
+        self.sessions: dict[str, ManagedSession] = {}
+        self._disconnecting: set[str] = set()
+        self._connect_locks: dict[str, asyncio.Lock] = {}
+        self._load_config()
+
+    def _load_config(self) -> None:
+        """Load configuration from environment (sync fallback)."""
+        max_turns_env = os.environ.get("ASSISTANT_MAX_TURNS", "").strip()
+        self.max_turns = int(max_turns_env) if max_turns_env else None
+
+    async def refresh_config(self) -> None:
+        """Reload configuration from ConfigService (DB), falling back to env."""
+        try:
+            from lib.config.service import ConfigService
+            from lib.db import async_session_factory
+
+            async with async_session_factory() as session:
+                svc = ConfigService(session)
+                raw = await svc.get_setting("assistant_max_turns", "")
+                raw = raw.strip()
+                if raw:
+                    self.max_turns = int(raw)
+                    return
+        except Exception:
+            logger.warning("Tải cấu hình trợ lý từ DB thất bại, đang sử dụng giá trị từ biến môi trường", exc_info=True)
+        # Fallback to env var
+        self._load_config()
+
+    _PERSONA_PROMPT = """\
+## Danh tính
+
+Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên nghiệp. Nhiệm vụ của bạn là chuyển đổi tiểu thuyết thành nội dung video ngắn có thể xuất bản.
+
+## Nguyên tắc hành xử
+
+- Chủ động hướng dẫn người dùng hoàn thành quy trình sáng tạo video, không chỉ thụ động trả lời câu hỏi
+- Khi gặp các quyết định sáng tạo không chắc chắn, hãy đưa ra các lựa chọn và gợi ý cho người dùng thay vì tự quyết định
+- Với các nhiệm vụ nhiều bước, sử dụng TodoWrite để theo dõi tiến độ và báo cáo cho người dùng
+- Bạn là cộng sự sản xuất video của người dùng, làm việc chuyên nghiệp, thân thiện và hiệu quả
+- QUAN TRỌNG: Nếu bạn sử dụng quá trình Suy nghĩ (Thinking/Thought), bạn PHẢI LUÔN trình bày câu trả lời chính thức của mình ra bên ngoài (hoặc sau khi kết thúc) khối suy nghĩ đó. Không bao giờ được dùng khối suy nghĩ thay cho câu trả lời.
+- QUAN TRỌNG VỀ CÔNG CỤ: Khi bạn muốn thực hiện hành động (đọc file, dùng skill, v.v.), bạn KHÔNG ĐƯỢC chỉ viết câu nói suông như "Tôi sẽ khởi chạy công cụ...". BẠN BẮT BUỘC PHẢI THỰC SỰ GỌI CÔNG CỤ ĐÓ thông qua định dạng tool call chuẩn của hệ thống. Nếu bạn chỉ nói mà không gọi tool, hệ thống sẽ không phản hồi!"""
+
+    def _build_append_prompt(self, project_name: str) -> str:
+        """Build the append portion for SystemPromptPreset.
+
+        Combines the ArcReel persona with project-specific context from
+        project.json.  The base CLAUDE.md is auto-loaded by the SDK via
+        setting_sources=["project"] and the CLAUDE.md symlink in the
+        project cwd.
+        """
+        parts = [self._PERSONA_PROMPT]
+
+        project_context = self._build_project_context(project_name)
+        if project_context:
+            parts.append(project_context)
+
+        return "\n".join(parts)
+
+    def _build_project_context(self, project_name: str) -> str:
+        """Build project-specific context from project.json metadata."""
+        try:
+            project_cwd = self._resolve_project_cwd(project_name)
+        except (ValueError, FileNotFoundError):
+            return ""
+
+        project_json = project_cwd / "project.json"
+        if not project_json.exists():
+            return ""
+
+        try:
+            config = json.loads(project_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to read project.json for %s: %s", project_name, exc)
+            return ""
+
+        if not isinstance(config, dict):
+            logger.warning("project.json for %s is not a JSON object", project_name)
+            return ""
+
+        parts = [
+            "## Ngữ cảnh dự án hiện tại",
+            "",
+        ]
+
+        # TODO: Hiện tại đây là dịch vụ tự triển khai, nên nối trực tiếp siêu dữ liệu dự án để giữ cho việc thực thi đơn giản.
+        # TODO: Nếu sau này phát triển thành SaaS / Đa khách thuê, cần lấy tiêu đề/phong cách/tổng quan... từ dữ liệu người dùng nhập
+        # TODO: và thiết lập ranh giới hoặc thoát ký tự cho "ngữ cảnh không phải chỉ dẫn" để giảm thiểu rủi ro bị tấn công prompt injection.
+        parts.append(f"- Định danh dự án: {project_name}")
+        if title := config.get("title"):
+            parts.append(f"- Tiêu đề dự án: {title}")
+        if mode := config.get("content_mode"):
+            parts.append(f"- Chế độ nội dung: {mode}")
+        if style := config.get("style"):
+            parts.append(f"- Phong cách hình ảnh: {style}")
+        if style_desc := config.get("style_description"):
+            parts.append(f"- Mô tả phong cách: {style_desc}")
+        parts.append(f"- Thư mục dự án (cwd)：{project_cwd}")
+        parts.append(
+            "- Tham số file_path của các công cụ như Read/Edit/Write phải sử dụng đường dẫn tuyệt đối, không dùng đường dẫn tương đối và không dùng tiêu đề dự án làm tên thư mục."
+        )
+        parts.append(
+            "- KHI GỌI BASH: BẮT BUỘC sử dụng đường dẫn tương đối (ví dụ: `python .claude/skills/.../script.py`)."
+        )
+        parts.append(
+            "- CẤM sử dụng lệnh `cd` hoặc `&&` trong Bash. Bạn đã ở đúng thư mục dự án rồi. KHÔNG dùng đường dẫn tuyệt đối trong Bash."
+        )
+        parts.append(
+            "- CẤM sử dụng dấu xuyệt ngược `\\` trong lệnh Bash, chỉ sử dụng dấu xuyệt xuôi `/` cho đường dẫn (ví dụ: `.claude/skills/`)."
+        )
+        parts.append("- Lệnh Bash phải viết trên một dòng, cấm sử dụng `\\` để xuống dòng, các tham số JSON sử dụng định dạng thu gọn (compact).")
+
+        self._append_overview_section(parts, config.get("overview", {}))
+
+        return "\n".join(parts)
+
+    @staticmethod
+    def _append_overview_section(parts: list[str], overview: Any) -> None:
+        """Append project overview fields to prompt parts."""
+        if not isinstance(overview, dict) or not overview:
+            return
+        parts.append("")
+        parts.append("### Tổng quan dự án")
+        if synopsis := overview.get("synopsis"):
+            parts.append(synopsis)
+        if genre := overview.get("genre"):
+            parts.append(f"- Thể loại: {genre}")
+        if theme := overview.get("theme"):
+            parts.append(f"- Chủ đề: {theme}")
+        if world := overview.get("world_setting"):
+            parts.append(f"- Thế giới quan: {world}")
+
+    def _build_options(
+        self,
+        project_name: str,
+        resume_id: str | None = None,
+        can_use_tool: Callable[[str, dict[str, Any], Any], Any] | None = None,
+    ) -> Any:
+        """Build ClaudeAgentOptions for a session."""
+        if not SDK_AVAILABLE or ClaudeAgentOptions is None:
+            raise RuntimeError("claude_agent_sdk is not installed")
+
+        transcripts_dir = self.data_dir / "transcripts"
+        transcripts_dir.mkdir(parents=True, exist_ok=True)
+        project_cwd = self._resolve_project_cwd(project_name)
+
+        # Build PreToolUse hooks — file access control MUST use hooks because
+        # Read/Glob/Grep are matched by allow rules (step 4 in the SDK
+        # permission chain) before reaching can_use_tool (step 5).  Hooks
+        # (step 1) fire for ALL tool calls and can override allow rules.
+        hooks = None
+        if HookMatcher is not None:
+            hook_callbacks: list[Any] = [
+                self._build_file_access_hook(project_cwd),
+            ]
+            if can_use_tool is not None:
+                # Official Python SDK guidance: keep stream open when using
+                # can_use_tool.
+                hook_callbacks.insert(0, self._keep_stream_open_hook)
+
+            # Shared dict: PreToolUse saves file backup, PostToolUse restores
+            # on corruption.  Keyed by tool_use_id.
+            json_backups: dict[str, tuple[Path, str]] = {}
+
+            hooks = {
+                "PreToolUse": [
+                    HookMatcher(matcher=None, hooks=hook_callbacks),
+                    HookMatcher(
+                        matcher="Write|Edit",
+                        hooks=[
+                            self._build_json_validation_hook(project_cwd, json_backups),
+                        ],
+                    ),
+                ],
+                "PostToolUse": [
+                    HookMatcher(
+                        matcher="Write|Edit",
+                        hooks=[
+                            self._build_json_post_validation_hook(project_cwd, json_backups),
+                        ],
+                    ),
+                ],
+            }
+
+        return ClaudeAgentOptions(
+            cwd=str(project_cwd),
+            setting_sources=self.DEFAULT_SETTING_SOURCES,
+            allowed_tools=self.DEFAULT_ALLOWED_TOOLS,
+            max_turns=self.max_turns,
+            system_prompt=SystemPromptPreset(
+                type="preset",
+                preset="claude_code",
+                append=self._build_append_prompt(project_name),
+            ),
+            include_partial_messages=True,
+            resume=resume_id,
+            can_use_tool=can_use_tool,
+            hooks=hooks,
+        )
+
+    @staticmethod
+    async def _keep_stream_open_hook(
+        _input_data: dict[str, Any], _tool_use_id: str | None, _context: Any
+    ) -> dict[str, bool]:
+        """Required keep-alive hook for Python can_use_tool callback."""
+        return {"continue_": True}
+
+    def _build_file_access_hook(
+        self,
+        project_cwd: Path,
+    ) -> Callable[..., Any]:
+        """Build a PreToolUse hook callback that enforces file access control.
+
+        PreToolUse hooks are step 1 in the SDK permission chain and fire for
+        **every** tool call, including Read/Glob/Grep which would otherwise
+        be auto-approved by allow rules at step 4.
+        """
+
+        async def _file_access_hook(
+            input_data: dict[str, Any],
+            _tool_use_id: str | None,
+            _context: Any,
+        ) -> dict[str, Any]:
+            tool_name = input_data.get("tool_name", "")
+            if tool_name not in self._PATH_TOOLS:
+                return {"continue_": True}
+
+            tool_input = input_data.get("tool_input", {})
+            path_key = self._PATH_TOOLS[tool_name]
+            file_path = tool_input.get(path_key)
+
+            if file_path and not self._is_path_allowed(
+                file_path,
+                tool_name,
+                project_cwd,
+            ):
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": ("Truy cập bị từ chối: Không được phép truy cập các đường dẫn nằm ngoài dự án hiện tại và thư mục công cộng"),
+                    },
+                }
+
+            return {"continue_": True}
+
+        return _file_access_hook
+
+    def _build_json_validation_hook(
+        self,
+        project_cwd: Path,
+        json_backups: dict[str, tuple[Path, str]] | None = None,
+    ) -> Callable[..., Any]:
+        """Build a PreToolUse hook that blocks Write/Edit when the result would
+        produce invalid JSON.
+
+        For Edit: reads the current file, simulates the string replacement, and
+        validates the result with ``json.loads()``.
+        For Write: validates the ``content`` parameter directly.
+
+        When *json_backups* is provided, the hook saves the current file
+        content before the edit so the PostToolUse hook can restore it if
+        the actual result turns out to be invalid.
+
+        Returns ``permissionDecision: "deny"`` to block the operation before it
+        executes, giving the agent a chance to fix its input and retry.
+        """
+
+        async def _json_validation_hook(
+            input_data: dict[str, Any],
+            _tool_use_id: str | None,
+            _context: Any,
+        ) -> dict[str, Any]:
+            tool_name = input_data.get("tool_name", "")
+            tool_input = input_data.get("tool_input", {})
+
+            file_path = tool_input.get("file_path", "")
+            if not file_path or not file_path.endswith(".json"):
+                return {}
+
+            # --- Reject curly/smart quotes that would corrupt JSON ---
+            _CURLY_QUOTES = "\u201c\u201d\u201e\u201f"  # ""„‟
+
+            def _has_curly_quotes(text: str) -> bool:
+                """Return True if *text* contains Unicode curly/smart quotes."""
+                return any(ch in _CURLY_QUOTES for ch in text)
+
+            # --- Simulate the result without touching the file ---
+            simulated: str | None = None
+
+            if tool_name == "Write":
+                simulated = tool_input.get("content")
+                logger.info(
+                    "JSON 校验 hook: tool=Write file=%s content_len=%s",
+                    file_path,
+                    len(simulated) if simulated else 0,
+                )
+            elif tool_name == "Edit":
+                old_string = tool_input.get("old_string", "")
+                new_string = tool_input.get("new_string", "")
+                if not old_string:
+                    logger.info(
+                        "JSON validation hook: tool=Edit file=%s skipping=old_string_is_empty",
+                        file_path,
+                    )
+                    return {}
+
+                # Detect curly quotes early — Claude Code may normalise
+                # old_string internally (allowing the edit to succeed) while
+                # the hook's exact-match ``old_string not in current`` check
+                # below would skip validation, letting curly quotes slip into
+                # the file and corrupt JSON.
+                if _has_curly_quotes(new_string):
+                    curly_found = [f"U+{ord(ch):04X}" for ch in new_string if ch in _CURLY_QUOTES]
+                    logger.warning(
+                        "PreToolUse JSON validation blocked (curly quotes): file=%s curly=%s",
+                        file_path,
+                        curly_found[:5],
+                    )
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                "Thao tác bị chặn: new_string chứa dấu ngoặc kép cong"
+                                "（\u201c hoặc \u201d），"
+                                "điều này sẽ phá vỡ định dạng JSON."
+                                "Vui lòng thay thế tất cả dấu ngoặc kép cong bằng dấu ngoặc kép"
+                                "tiêu chuẩn ASCII (U+0022) rồi thử lại."
+                            ),
+                        },
+                    }
+
+                p = Path(file_path)
+                resolved = (project_cwd / p).resolve() if not p.is_absolute() else p.resolve()
+                try:
+                    current = resolved.read_text(encoding="utf-8")
+                except OSError as read_err:
+                    logger.info(
+                        "JSON validation hook: tool=Edit file=%s skipping=read_failed error=%s",
+                        file_path,
+                        read_err,
+                    )
+                    return {}
+
+                # Save backup for PostToolUse restore on corruption
+                if json_backups is not None and _tool_use_id:
+                    json_backups[_tool_use_id] = (resolved, current)
+
+                if old_string not in current:
+                    # Edit tool will fail on its own; no need to intervene.
+                    logger.info(
+                        "JSON validation hook: tool=Edit file=%s skipping=old_string_mismatch old_len=%d new_len=%d file_len=%d",
+                        file_path,
+                        len(old_string),
+                        len(new_string),
+                        len(current),
+                    )
+                    return {}
+
+                replace_all = tool_input.get("replace_all", False)
+                if replace_all:
+                    simulated = current.replace(old_string, new_string)
+                else:
+                    simulated = current.replace(old_string, new_string, 1)
+
+                logger.info(
+                    "JSON validation hook: tool=Edit file=%s matched=True "
+                    "old_len=%d new_len=%d simulated_len=%d replace_all=%s",
+                    file_path,
+                    len(old_string),
+                    len(new_string),
+                    len(simulated),
+                    replace_all,
+                )
+
+            if simulated is None:
+                return {}
+
+            try:
+                json.loads(simulated)
+                logger.info(
+                    "JSON validation hook: tool=%s file=%s result=valid",
+                    tool_name,
+                    file_path,
+                )
+                return {}
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "PreToolUse JSON validation blocked: file=%s tool=%s error=%s",
+                    file_path,
+                    tool_name,
+                    exc,
+                )
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            f"Thao tác bị chặn: Việc thực hiện {tool_name} lần này sẽ khiến {file_path} "
+                            f"trở thành JSON không hợp lệ. Lỗi：{exc}。"
+                            "Vui lòng kiểm tra xem nội dung nhập vào có chứa dấu ngoặc kép chưa được thoát hoặc các lỗi"
+                            "cú pháp JSON khác không, sau đó sửa lại rồi thử lại."
+                        ),
+                    },
+                }
+
+        return _json_validation_hook
+
+    def _build_json_post_validation_hook(
+        self,
+        project_cwd: Path,
+        json_backups: dict[str, tuple[Path, str]],
+    ) -> Callable[..., Any]:
+        """Build a PostToolUse hook that validates JSON files after Write/Edit.
+
+        This is a safety net for cases where the PreToolUse simulation fails
+        to catch invalid edits (e.g. due to old_string mismatch or escaping
+        differences between the hook simulation and the actual Edit tool).
+
+        If the file is invalid JSON after the edit, the hook:
+        1. Restores the file from the backup saved by the PreToolUse hook
+        2. Returns ``additionalContext`` telling the agent what went wrong
+        """
+
+        async def _json_post_validation_hook(
+            input_data: dict[str, Any],
+            tool_use_id: str | None,
+            _context: Any,
+        ) -> dict[str, Any]:
+            # Top-level guard: unhandled exceptions in hooks interrupt the
+            # agent (per SDK docs), so we catch everything and log.
+            try:
+                return await _json_post_validation_impl(
+                    input_data,
+                    tool_use_id,
+                )
+            except Exception:
+                logger.exception("Ngoại lệ trong PostToolUse JSON validation hook")
+                return {}
+
+        async def _json_post_validation_impl(
+            input_data: dict[str, Any],
+            tool_use_id: str | None,
+        ) -> dict[str, Any]:
+            tool_name = input_data.get("tool_name", "")
+            tool_input = input_data.get("tool_input", {})
+
+            file_path = tool_input.get("file_path", "")
+            if not file_path or not file_path.endswith(".json"):
+                return {}
+
+            # Pop the backup regardless of outcome to avoid memory leaks
+            backup = json_backups.pop(tool_use_id, None) if tool_use_id else None
+
+            p = Path(file_path)
+            resolved = (project_cwd / p).resolve() if not p.is_absolute() else p.resolve()
+
+            try:
+                actual = resolved.read_text(encoding="utf-8")
+            except OSError:
+                return {}
+
+            try:
+                json.loads(actual)
+                logger.info(
+                    "PostToolUse JSON validation: tool=%s file=%s result=valid",
+                    tool_name,
+                    file_path,
+                )
+                return {}
+            except json.JSONDecodeError as exc:
+                # File is corrupt — restore from backup if available
+                restored = False
+                if backup:
+                    backup_path, backup_content = backup
+                    try:
+                        backup_path.write_text(backup_content, encoding="utf-8")
+                        restored = True
+                        logger.warning(
+                            "PostToolUse JSON validation blocked and restored: file=%s tool=%s error=%s backup_restored=True",
+                            file_path,
+                            tool_name,
+                            exc,
+                        )
+                    except OSError as write_err:
+                        logger.error(
+                            "PostToolUse JSON backup restore failed: file=%s error=%s",
+                            file_path,
+                            write_err,
+                        )
+                else:
+                    logger.warning(
+                        "PostToolUse JSON validation blocked (no backup): file=%s tool=%s error=%s",
+                        file_path,
+                        tool_name,
+                        exc,
+                    )
+
+                if restored:
+                    ctx = (
+                        f"⚠ Đã phát hiện hỏng hóc JSON và đã khôi phục：{tool_name} làm cho "
+                        f"{file_path} trở thành JSON không hợp lệ（{exc}）。"
+                        "Tệp đã được khôi phục về trạng thái trước khi chỉnh sửa, vui lòng sửa lỗi và thử lại."
+                    )
+                else:
+                    ctx = (
+                        f"⚠ Đã phát hiện hỏng hóc JSON nhưng không thể khôi phục：{tool_name} làm cho "
+                        f"{file_path} trở thành JSON không hợp lệ（{exc}）。"
+                        "Tệp hiện vẫn đang ở trạng thái hỏng (không có bản sao lưu khả dụng hoặc ghi đè bản sao lưu thất bại)，"
+                        "vui lòng đọc tệp xác nhận nội dung, sau đó tự sửa thủ công thành JSON hợp lệ."
+                    )
+
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PostToolUse",
+                        "additionalContext": ctx,
+                    },
+                }
+
+        return _json_post_validation_hook
+
+    def _resolve_project_cwd(self, project_name: str) -> Path:
+        """Resolve and validate per-session project working directory."""
+        projects_root = (self.project_root / "projects").resolve()
+        project_cwd = (projects_root / project_name).resolve()
+        try:
+            project_cwd.relative_to(projects_root)
+        except ValueError as exc:
+            raise ValueError("invalid project name") from exc
+        if not project_cwd.exists() or not project_cwd.is_dir():
+            raise FileNotFoundError(f"project not found: {project_name}")
+        return project_cwd
+
+    async def send_new_session(
+        self,
+        project_name: str,
+        prompt: str | AsyncIterable[dict],
+        *,
+        echo_text: str | None = None,
+        echo_content: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Create a new session via send-first: connect SDK, send message, wait for sdk_session_id."""
+        if not SDK_AVAILABLE or ClaudeSDKClient is None:
+            raise RuntimeError("claude_agent_sdk is not installed")
+
+        await self._ensure_capacity()
+        temp_id = uuid4().hex
+        managed_ref: list[ManagedSession | None] = [None]
+
+        options = self._build_options(
+            project_name,
+            resume_id=None,
+            can_use_tool=await self._build_can_use_tool_callback(temp_id, managed_ref),
+        )
+        client = ClaudeSDKClient(options=options)
+        await client.connect()
+
+        managed = ManagedSession(
+            session_id=temp_id,
+            client=client,
+            status="running",
+            project_name=project_name,
+        )
+        managed_ref[0] = managed
+        managed.last_activity = time.monotonic()
+        self.sessions[temp_id] = managed
+
+        # Echo user message
+        display_text = echo_text or (prompt if isinstance(prompt, str) else "")
+        dedup_key = display_text or (self._IMAGE_ONLY_SENTINEL if echo_content else "")
+        if dedup_key:
+            managed.pending_user_echoes.append(dedup_key)
+        managed.add_message(self._build_user_echo_message(display_text, echo_content))
+
+        try:
+            await managed.client.query(prompt)
+        except Exception:
+            logger.exception("Gửi tin nhắn phiên mới thất bại")
+            del self.sessions[temp_id]
+            try:
+                await client.disconnect()
+            except Exception as disconnect_err:
+                logger.warning("新会话断开连接失败: %s", disconnect_err)
+            raise
+
+        managed.consumer_task = asyncio.create_task(self._consume_messages(managed))
+
+        # Wait for sdk_session_id with timeout
+        try:
+            await asyncio.wait_for(managed.sdk_id_event.wait(), timeout=60.0)
+        except TimeoutError:
+            logger.error("Đợi sdk_session_id quá hạn temp_id=%s", temp_id)
+            managed.cancel_pending_questions("session creation timed out")
+            if managed.consumer_task and not managed.consumer_task.done():
+                managed.consumer_task.cancel()
+                await asyncio.gather(managed.consumer_task, return_exceptions=True)
+            del self.sessions[temp_id]
+            try:
+                await client.disconnect()
+            except Exception as disconnect_err:
+                logger.warning("超时清理断开连接失败: %s", disconnect_err)
+            raise TimeoutError("SDK 会话创建超时")
+
+        sdk_id = managed.resolved_sdk_id
+        assert sdk_id is not None
+        # Key swap already done in _on_sdk_session_id_received
+        assert managed.session_id == sdk_id
+
+        return sdk_id
+
+    async def get_or_connect(self, session_id: str, *, meta: Optional["SessionMeta"] = None) -> ManagedSession:
+        """Get existing managed session or create new connection."""
+        if session_id in self.sessions and session_id not in self._disconnecting:
+            return self.sessions[session_id]
+
+        # Per-session lock prevents concurrent connect() for the same session_id.
+        if session_id not in self._connect_locks:
+            self._connect_locks[session_id] = asyncio.Lock()
+        lock = self._connect_locks[session_id]
+
+        async with lock:
+            # Re-check after acquiring lock
+            if session_id in self.sessions:
+                return self.sessions[session_id]
+
+            if meta is None:
+                meta = await self.meta_store.get(session_id)
+                if meta is None:
+                    raise FileNotFoundError(f"session not found: {session_id}")
+
+            if not SDK_AVAILABLE or ClaudeSDKClient is None:
+                raise RuntimeError("claude_agent_sdk is not installed")
+
+            await self._ensure_capacity()
+            options = self._build_options(
+                meta.project_name,
+                meta.id,  # SessionMeta.id 就是 sdk_session_id
+                can_use_tool=await self._build_can_use_tool_callback(session_id),
+            )
+            client = ClaudeSDKClient(options=options)
+            await client.connect()
+
+            managed = ManagedSession(
+                session_id=meta.id,  # 现在就是 sdk_session_id
+                client=client,
+                status=meta.status if meta.status != "idle" else "idle",
+                project_name=meta.project_name,
+                resolved_sdk_id=meta.id,  # 标记为已注册，防止重复创建 DB 记录
+            )
+            managed.sdk_id_event.set()  # 已有会话不需要等待
+            self.sessions[session_id] = managed
+            return managed
+
+    async def send_message(
+        self,
+        session_id: str,
+        prompt: str | AsyncIterable[dict],
+        *,
+        echo_text: str | None = None,
+        echo_content: list[dict[str, Any]] | None = None,
+        meta: Optional["SessionMeta"] = None,
+    ) -> None:
+        """Send a message and start background consumer."""
+        managed = await self.get_or_connect(session_id, meta=meta)
+        managed.last_activity = time.monotonic()
+        # 取消待执行的 cleanup（会话恢复活跃）
+        if managed._cleanup_task and not managed._cleanup_task.done():
+            managed._cleanup_task.cancel()
+            managed._cleanup_task = None
+
+        if managed.status == "running":
+            raise ValueError("会话正在处理中，请等待当前回复完成后再发送新消息")
+
+        self._prune_transient_buffer(managed)
+
+        # Determine the display text for echo dedup (pending_user_echoes).
+        # For image-only messages display_text is empty; use a sentinel so the
+        # SDK-replayed empty-content user message can still be deduplicated.
+        display_text = echo_text or (prompt if isinstance(prompt, str) else "")
+        dedup_key = display_text or (self._IMAGE_ONLY_SENTINEL if echo_content else "")
+
+        # Update in-memory status and echo user input immediately so live SSE
+        # shows it even when SDK stream doesn't replay user messages in real time.
+        managed.status = "running"
+        if dedup_key:
+            managed.pending_user_echoes.append(dedup_key)
+            if len(managed.pending_user_echoes) > 20:
+                managed.pending_user_echoes.pop(0)
+        managed.add_message(self._build_user_echo_message(display_text, echo_content))
+
+        # Persist status asynchronously — don't block the echo broadcast
+        await self.meta_store.update_status(session_id, "running")
+
+        # Send the query — restore status on failure so the session is not
+        # permanently stuck in "running" without an active consumer.
+        try:
+            await managed.client.query(prompt)
+        except Exception:
+            logger.exception("Xử lý tin nhắn phiên thất bại")
+            managed.pending_user_echoes.clear()
+            managed.status = "error"
+            await self.meta_store.update_status(session_id, "error")
+            raise
+
+        # Start consumer task if not running
+        if managed.consumer_task is None or managed.consumer_task.done():
+            managed.consumer_task = asyncio.create_task(self._consume_messages(managed))
+
+    async def interrupt_session(self, session_id: str) -> SessionStatus:
+        """Interrupt a running session."""
+        meta = await self.meta_store.get(session_id)
+        if meta is None:
+            raise FileNotFoundError(f"session not found: {session_id}")
+
+        managed = self.sessions.get(session_id)
+        if managed is None:
+            if meta.status == "running":
+                await self.meta_store.update_status(session_id, "interrupted")
+                return "interrupted"
+            return meta.status
+
+        if managed.status != "running":
+            return managed.status
+
+        managed.pending_user_echoes.clear()
+        managed.interrupt_requested = True
+        managed.cancel_pending_questions("session interrupted by user")
+
+        await managed.client.interrupt()
+
+        # If the consumer task is still alive, cancel it. This handles cases where
+        # the CLI hangs (e.g. malformed input) and never sends a ResultMessage in
+        # response to the interrupt signal.
+        if managed.consumer_task and not managed.consumer_task.done():
+            managed.consumer_task.cancel()
+
+        return managed.status
+
+    async def _consume_messages(self, managed: ManagedSession) -> None:
+        """Consume messages from client and distribute to subscribers."""
+        try:
+            async for message in managed.client.receive_response():
+                msg_dict = self._message_to_dict(message)
+                if not isinstance(msg_dict, dict):
+                    continue
+
+                if self._is_duplicate_user_echo(managed, msg_dict):
+                    await self._on_sdk_session_id_received(managed, message, msg_dict)
+                    continue
+
+                self._handle_special_message(managed, msg_dict)
+                managed.add_message(msg_dict)
+                await self._on_sdk_session_id_received(managed, message, msg_dict)
+
+                if msg_dict.get("type") != "result":
+                    continue
+
+                await self._finalize_turn(managed, msg_dict)
+
+        except asyncio.CancelledError:
+            await self._mark_session_terminal(managed, "interrupted", "phiên làm việc bị ngắt quãng")
+            raise
+        except Exception:
+            logger.exception("Ngoại lệ vòng lặp tiêu thụ tin nhắn phiên")
+            await self._mark_session_terminal(managed, "error", "lỗi phiên làm việc")
+            raise
+
+    def _handle_special_message(self, managed: ManagedSession, msg_dict: dict[str, Any]) -> None:
+        """Handle compact_boundary and result messages before broadcast."""
+        if msg_dict.get("type") == "system" and msg_dict.get("subtype") == "compact_boundary":
+            self._prune_transient_buffer(managed)
+
+        if msg_dict.get("type") == "result":
+            msg_dict["session_status"] = self._resolve_result_status(
+                msg_dict,
+                interrupt_requested=managed.interrupt_requested,
+            )
+
+    async def _finalize_turn(self, managed: ManagedSession, result_msg: dict[str, Any]) -> None:
+        """Settle session state after a result message completes a turn."""
+        managed.pending_user_echoes.clear()
+        managed.cancel_pending_questions("session completed")
+        explicit = str(result_msg.get("session_status") or "").strip()
+        final_status: SessionStatus = (
+            explicit  # type: ignore[assignment]
+            if explicit in {"idle", "running", "completed", "error", "interrupted"}
+            else self._resolve_result_status(
+                result_msg,
+                interrupt_requested=managed.interrupt_requested,
+            )
+        )
+        managed.status = final_status
+        managed.last_activity = time.monotonic()
+        await self.meta_store.update_status(managed.session_id, final_status)
+        managed.interrupt_requested = False
+        self._prune_transient_buffer(managed)
+        if final_status != "running":
+            self._schedule_cleanup(managed.session_id)
+
+    async def _mark_session_terminal(self, managed: ManagedSession, status: SessionStatus, reason: str) -> None:
+        """Set terminal status on abnormal consumer exit."""
+        managed.pending_user_echoes.clear()
+        managed.cancel_pending_questions(reason)
+        managed.status = status
+        managed.last_activity = time.monotonic()
+        await self.meta_store.update_status(managed.session_id, status)
+        managed.interrupt_requested = False
+        self._prune_transient_buffer(managed)
+
+        # For interrupted sessions, broadcast a synthetic interrupt echo so the
+        # SSE projector generates an interrupt_notice turn.  This keeps the live
+        # path consistent with the historical path where the SDK transcript
+        # contains the CLI-injected interrupt echo that the turn_grouper converts.
+        # The consumer task is already cancelled at this point so the SDK's own
+        # echo will never arrive through the normal message pipeline.
+        if status == "interrupted":
+            managed._broadcast_to_subscribers(
+                {
+                    "type": "user",
+                    "content": "[Request interrupted by user]",
+                    "uuid": f"interrupt-echo-{uuid4().hex}",
+                    "timestamp": _utc_now_iso(),
+                }
+            )
+
+        # Broadcast terminal status so SSE subscribers unblock immediately
+        # instead of waiting for the heartbeat timeout.
+        managed._broadcast_to_subscribers(
+            {
+                "type": "runtime_status",
+                "status": status,
+                "reason": reason,
+            }
+        )
+        self._schedule_cleanup(managed.session_id)
+
+    def _schedule_cleanup(self, session_id: str) -> None:
+        """Lập lịch dọn dẹp trễ cho các phiên không ở trạng thái running, thời gian trễ được lấy từ cấu hình."""
+        managed = self.sessions.get(session_id)
+        if managed is None:
+            return
+        # 取消旧的 cleanup task
+        if managed._cleanup_task and not managed._cleanup_task.done():
+            managed._cleanup_task.cancel()
+
+        async def _do_cleanup() -> None:
+            delay = await self._get_cleanup_delay()
+            await asyncio.sleep(delay)
+            m = self.sessions.get(session_id)
+            if m is None:
+                return
+            # 会话已恢复活跃 → 跳过
+            if m.status == "running":
+                return
+            logger.info("Đang dọn dẹp phiên session_id=%s status=%s", session_id, m.status)
+            # 清除自身引用，避免 _disconnect_session 尝试 cancel/gather 当前任务
+            m._cleanup_task = None
+            try:
+                await self._disconnect_session(session_id, reason="cleanup timer")
+            except Exception:
+                logger.warning("Dọn dẹp phiên thất bại session_id=%s", session_id, exc_info=True)
+
+        managed._cleanup_task = asyncio.create_task(_do_cleanup())
+
+    @staticmethod
+    def _get_client_process(client: Any) -> Any:
+        """Best-effort access to the SDK transport process for fallback kill."""
+        transport = getattr(client, "_transport", None)
+        if transport is None:
+            return None
+        return getattr(transport, "_process", None)
+
+    @staticmethod
+    def _process_pid(process: Any) -> int | None:
+        pid = getattr(process, "pid", None)
+        return pid if isinstance(pid, int) else None
+
+    @staticmethod
+    def _process_returncode(process: Any) -> int | None:
+        returncode = getattr(process, "returncode", None)
+        return returncode if isinstance(returncode, int) else None
+
+    async def _cancel_task(self, task: asyncio.Task | None) -> None:
+        """Cancel a task and wait for it to finish."""
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _wait_for_process_exit(
+        self,
+        process: Any,
+        *,
+        timeout: float,
+    ) -> bool:
+        """Wait for a subprocess to exit within timeout."""
+        if process is None:
+            return True
+        if self._process_returncode(process) is not None:
+            return True
+        try:
+            await asyncio.wait_for(process.wait(), timeout=timeout)
+        except TimeoutError:
+            return False
+        except Exception:
+            logger.warning("Đợi tiến trình Claude con thoát thất bại", exc_info=True)
+            return False
+        return self._process_returncode(process) is not None
+
+    async def _force_close_client_process(
+        self,
+        session_id: str,
+        process: Any,
+        *,
+        pid: int | None,
+        cause: str,
+    ) -> bool:
+        """Force terminate lingering Claude CLI process."""
+        if process is None:
+            logger.error(
+                "Ngắt kết nối phiên thất bại và không thể truy cập tiến trình gốc session_id=%s cause=%s",
+                session_id,
+                cause,
+            )
+            return False
+
+        if self._process_returncode(process) is not None:
+            return True
+
+        logger.warning(
+            "Phiên ngắt kết nối bất thường, đang thử cưỡng bức chấm dứt tiến trình Claude con session_id=%s pid=%s cause=%s",
+            session_id,
+            pid,
+            cause,
+        )
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return True
+        except Exception:
+            logger.warning(
+                "Gửi tín hiệu SIGTERM thất bại session_id=%s pid=%s",
+                session_id,
+                pid,
+                exc_info=True,
+            )
+        else:
+            if await self._wait_for_process_exit(process, timeout=self._TERMINATE_WAIT_TIMEOUT):
+                logger.warning(
+                    "Tiến trình Claude con đã thoát qua SIGTERM session_id=%s pid=%s returncode=%s",
+                    session_id,
+                    pid,
+                    self._process_returncode(process),
+                )
+                return True
+
+        logger.error(
+            "Tiến trình Claude con vẫn tồn tại sau SIGTERM, đang gửi SIGKILL session_id=%s pid=%s",
+            session_id,
+            pid,
+        )
+        try:
+            process.kill()
+        except ProcessLookupError:
+            return True
+        except Exception:
+            logger.error(
+                "Gửi tín hiệu SIGKILL thất bại session_id=%s pid=%s",
+                session_id,
+                pid,
+                exc_info=True,
+            )
+            return False
+
+        if await self._wait_for_process_exit(process, timeout=self._KILL_WAIT_TIMEOUT):
+            logger.warning(
+                "Tiến trình Claude con đã thoát qua SIGKILL session_id=%s pid=%s returncode=%s",
+                session_id,
+                pid,
+                self._process_returncode(process),
+            )
+            return True
+
+        logger.error(
+            "Tiến trình Claude con vẫn chưa thoát sau SIGKILL session_id=%s pid=%s",
+            session_id,
+            pid,
+        )
+        return False
+
+    async def close_session(self, session_id: str, *, reason: str = "session closed") -> None:
+        """Public close entry for explicit session teardown paths."""
+        await self._disconnect_session(
+            session_id,
+            reason=reason,
+            interrupt_running=True,
+        )
+
+    async def _disconnect_session(
+        self,
+        session_id: str,
+        *,
+        reason: str = "session closed",
+        interrupt_running: bool = False,
+    ) -> None:
+        """Ngắt kết nối phiên an toàn, xác nhận tiến trình con đã thoát trước khi giải phóng slot."""
+        if session_id in self._disconnecting:
+            return
+        managed = self.sessions.get(session_id)
+        if managed is None:
+            return
+        self._disconnecting.add(session_id)
+        try:
+            await self._disconnect_session_inner(
+                session_id,
+                managed,
+                reason=reason,
+                interrupt_running=interrupt_running,
+            )
+        finally:
+            self._disconnecting.discard(session_id)
+
+    async def _disconnect_session_inner(
+        self,
+        session_id: str,
+        managed: ManagedSession,
+        *,
+        reason: str,
+        interrupt_running: bool,
+    ) -> None:
+        managed.cancel_pending_questions(reason)
+        await self._cancel_task(managed._cleanup_task)
+
+        if interrupt_running and managed.status == "running":
+            managed.pending_user_echoes.clear()
+            managed.interrupt_requested = True
+            try:
+                await asyncio.wait_for(
+                    managed.client.interrupt(),
+                    timeout=self._INTERRUPT_TIMEOUT,
+                )
+            except TimeoutError:
+                logger.warning("Ngắt phiên quá hạn session_id=%s", session_id)
+            except Exception:
+                logger.warning("Ngắt phiên thất bại session_id=%s", session_id, exc_info=True)
+
+            managed.status = "interrupted"
+            try:
+                await self.meta_store.update_status(session_id, "interrupted")
+            except Exception:
+                logger.warning(
+                    "Cập nhật trạng thái ngắt phiên thất bại session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+
+        await self._cancel_task(managed.consumer_task)
+        await self._cancel_task(managed._cleanup_task)
+
+        process = self._get_client_process(managed.client)
+        pid = self._process_pid(process)
+        logger.info(
+            "Bắt đầu ngắt kết nối phiên session_id=%s status=%s pid=%s reason=%s",
+            session_id,
+            managed.status,
+            pid,
+            reason,
+        )
+
+        disconnect_task = asyncio.create_task(managed.client.disconnect())
+        disconnect_error: BaseException | None = None
+        try:
+            await asyncio.wait_for(disconnect_task, timeout=self._DISCONNECT_TIMEOUT)
+        except TimeoutError as exc:
+            disconnect_error = exc
+            disconnect_task.cancel()
+            await asyncio.gather(disconnect_task, return_exceptions=True)
+        except Exception as exc:
+            disconnect_error = exc
+
+        closed = False
+        if disconnect_error is None:
+            closed = process is None or self._process_returncode(process) is not None
+            if not closed:
+                logger.warning(
+                    "Tiến trình Claude con vẫn tồn tại sau khi gọi disconnect session_id=%s pid=%s",
+                    session_id,
+                    pid,
+                )
+        else:
+            logger.warning(
+                "Ngắt kết nối phiên êm đẹp thất bại session_id=%s pid=%s reason=%s error=%s",
+                session_id,
+                pid,
+                reason,
+                disconnect_error,
+            )
+
+        if not closed:
+            closed = await self._force_close_client_process(
+                session_id,
+                process,
+                pid=pid,
+                cause="disconnect_timeout"
+                if isinstance(disconnect_error, asyncio.TimeoutError)
+                else ("disconnect_error" if disconnect_error is not None else "process_still_running"),
+            )
+
+        if not closed:
+            raise RuntimeError(f"failed to close Claude subprocess for session {session_id}") from disconnect_error
+
+        managed.clear_buffer()
+        self.sessions.pop(session_id, None)
+        self._connect_locks.pop(session_id, None)
+        logger.info(
+            "Phiên làm việc đã ngắt kết nối session_id=%s pid=%s returncode=%s",
+            session_id,
+            pid,
+            self._process_returncode(process),
+        )
+
+    async def _get_cleanup_delay(self) -> int:
+        """返回会话清理延迟秒数，默认 300（5 分钟）。"""
+        try:
+            async with async_session_factory() as session:
+                svc = ConfigService(session)
+                val = await svc.get_setting("agent_session_cleanup_delay_seconds", "300")
+            return max(int(val), 10)
+        except Exception:
+            logger.warning("Đọc cấu hình cleanup delay thất bại, đang sử dụng giá trị mặc định", exc_info=True)
+            return 300
+
+    async def _get_max_concurrent(self) -> int:
+        """返回最大并发会话数，默认 5。"""
+        try:
+            async with async_session_factory() as session:
+                svc = ConfigService(session)
+                val = await svc.get_setting("agent_max_concurrent_sessions", "5")
+            return max(int(val), 1)
+        except Exception:
+            logger.warning("Đọc cấu hình max_concurrent thất bại, đang sử dụng giá trị mặc định", exc_info=True)
+            return 5
+
+    async def _ensure_capacity(self) -> None:
+        """Đảm bảo có slot đồng thời trống, nếu cần sẽ loại bỏ phiên ít hoạt động nhất không ở trạng thái running."""
+        max_concurrent = await self._get_max_concurrent()
+        active = [s for s in self.sessions.values() if s.client is not None and s.session_id not in self._disconnecting]
+
+        if len(active) < max_concurrent:
+            return
+
+        # 可淘汰的会话：非 running 状态（idle / completed / error / interrupted）
+        evictable = sorted(
+            [s for s in active if s.status != "running"],
+            key=lambda s: s.last_activity or 0,
+        )
+
+        if evictable:
+            victim = evictable[0]
+            logger.info(
+                "Đạt giới hạn đồng thời, đang loại bỏ session_id=%s (status=%s)",
+                victim.session_id,
+                victim.status,
+            )
+            try:
+                await self._disconnect_session(
+                    victim.session_id,
+                    reason="capacity eviction",
+                )
+            except Exception as exc:
+                logger.error(
+                    "Loại bỏ phiên thất bại, không thể giải phóng slot đồng thời session_id=%s",
+                    victim.session_id,
+                    exc_info=True,
+                )
+                raise SessionCapacityError("Có phiên nhàn rỗi không thể đóng, hiện không thể giải phóng slot đồng thời, vui lòng thử lại sau") from exc
+            return
+
+        # Tất cả các phiên đều đang running → Từ chối
+        raise SessionCapacityError(f"Hiện tại có {len(active)} phiên đang chạy, đã đạt giới hạn tối đa, vui lòng thử lại sau")
+
+    _PATROL_INTERVAL = 300  # 5 phút
+
+    async def _patrol_once(self) -> None:
+        """Tuần tra một lần: Dọn dẹp tất cả các phiên quá hạn không ở trạng thái running."""
+        cleanup_delay = await self._get_cleanup_delay()
+        now = time.monotonic()
+        for sid, managed in list(self.sessions.items()):
+            if managed.status == "running" or sid in self._disconnecting:
+                continue
+            activity_age = now - (managed.last_activity or 0)
+            if activity_age > cleanup_delay * 2:
+                logger.info("Tuần tra dọn dẹp định kỳ phiên session_id=%s status=%s", sid, managed.status)
+                try:
+                    await self._disconnect_session(sid, reason="patrol cleanup")
+                except Exception:
+                    logger.warning(
+                        "Tuần tra dọn dẹp định kỳ thất bại session_id=%s",
+                        sid,
+                        exc_info=True,
+                    )
+
+    async def _patrol_loop(self) -> None:
+        """Vòng lặp tuần tra định kỳ chạy nền."""
+        while True:
+            await asyncio.sleep(self._PATROL_INTERVAL)
+            try:
+                await self._patrol_once()
+            except Exception:
+                logger.warning("Ngoại lệ vòng lặp tuần tra", exc_info=True)
+
+    def start_patrol(self) -> None:
+        """Bắt đầu nhiệm vụ tuần tra chạy nền (nên được gọi khi ứng dụng khởi động - startup)."""
+        self._patrol_task = asyncio.create_task(self._patrol_loop())
+
+    @staticmethod
+    def _resolve_result_status(
+        result_message: dict[str, Any],
+        interrupt_requested: bool = False,
+    ) -> SessionStatus:
+        """Map SDK result subtype/is_error to runtime session status."""
+        subtype = str(result_message.get("subtype") or "").strip().lower()
+        is_error = bool(result_message.get("is_error"))
+        if interrupt_requested:
+            if subtype in {"interrupted", "interrupt"}:
+                return "interrupted"
+            if is_error or subtype.startswith("error"):
+                return "interrupted"
+        if is_error or subtype.startswith("error"):
+            return "error"
+        return "completed"
+
+    # Base directory where the SDK stores per-project session data.
+    _CLAUDE_PROJECTS_DIR: Path = Path.home() / ".claude" / "projects"
+
+    @staticmethod
+    def _encode_sdk_project_path(project_cwd: Path) -> str:
+        """Encode a project cwd the same way the SDK does for session storage.
+
+        Uses the same scheme as transcript_reader.py and the SDK itself:
+        replace ``/`` and ``.`` with ``-``.
+        """
+        return project_cwd.as_posix().replace("/", "-").replace(".", "-")
+
+    def _is_path_allowed(
+        self,
+        file_path: str,
+        tool_name: str,
+        project_cwd: Path,
+    ) -> bool:
+        """Check if file_path is allowed for the given tool.
+
+        Write tools: only project_cwd.
+        Read tools: project_cwd + project_root + SDK session dir for
+        this project (sensitive files protected by settings.json deny rules).
+        """
+        try:
+            p = Path(file_path)
+            resolved = (project_cwd / p).resolve() if not p.is_absolute() else p.resolve()
+        except (ValueError, OSError):
+            return False
+
+        # Use Case-Insensitive comparison for Windows drive letters
+        try:
+            # Check if resolved is relative to project_cwd
+            # Use os.path.normcase to handle Windows casing (C: vs c:)
+            norm_resolved = os.path.normcase(str(resolved))
+            norm_project_cwd = os.path.normcase(str(project_cwd))
+            
+            if norm_resolved.startswith(norm_project_cwd):
+                return True
+        except (ValueError, OSError):
+            pass
+
+        # 1. Within project directory — full access (read + write)
+        try:
+            if resolved.is_relative_to(project_cwd):
+                return True
+        except (ValueError, OSError):
+            pass
+
+        # 2. Write tools: only project directory allowed
+        if tool_name in self._WRITE_TOOLS:
+            return False
+
+        # 3. Read tools: allow entire project_root for shared resources
+        #    Sensitive files protected by settings.json deny rules
+        if resolved.is_relative_to(self.project_root):
+            return True
+
+        # 4. Read tools: allow SDK tool-results for THIS project only.
+        #    When tool output exceeds the inline limit, the SDK saves the
+        #    full result to ~/.claude/projects/{encoded-cwd}/{session}/
+        #    tool-results/{id}.txt and instructs the agent to Read it.
+        #    Only tool-results/ subdirectories are allowed — other SDK
+        #    session data (transcripts, etc.) remains inaccessible.
+        encoded = self._encode_sdk_project_path(project_cwd)
+        sdk_project_dir = self._CLAUDE_PROJECTS_DIR / encoded
+        if resolved.is_relative_to(sdk_project_dir) and "tool-results" in resolved.parts:
+            return True
+
+        # 5. Read tools: allow SDK task output files.
+        #    Background tasks (Agent/Bash run_in_background) write their
+        #    output to /tmp/claude-{N}/{encoded-cwd}/tasks/{id}.output.
+        #    The SDK instructs the agent to Read the file after the task
+        #    completes.  Only the tasks/ subdirectory is allowed.
+        #    macOS: /tmp → /private/tmp symlink, so check both prefixes.
+        _SDK_TMP_PREFIXES = ("/tmp/claude-", "/private/tmp/claude-")
+        resolved_str = str(resolved)
+        if resolved_str.startswith(_SDK_TMP_PREFIXES) and "tasks" in resolved.parts:
+            return True
+
+        return False
+
+    async def _handle_ask_user_question(
+        self,
+        managed: Optional["ManagedSession"],
+        tool_name: str,
+        input_data: dict[str, Any],
+    ) -> Any:
+        """Handle AskUserQuestion tool invocation within can_use_tool callback."""
+        if managed is None:
+            return PermissionResultAllow(updated_input=input_data)
+
+        raw_questions = input_data.get("questions")
+        questions = raw_questions if isinstance(raw_questions, list) else []
+        payload = {
+            "type": "ask_user_question",
+            "question_id": f"aq_{uuid4().hex}",
+            "tool_name": tool_name,
+            "questions": questions,
+            "timestamp": _utc_now_iso(),
+        }
+        pending = managed.add_pending_question(payload)
+        managed.add_message(payload)
+
+        try:
+            answers = await pending.answer_future
+        except Exception as exc:
+            if PermissionResultDeny is not None:
+                return PermissionResultDeny(
+                    message=str(exc) or "session interrupted by user",
+                    interrupt=True,
+                )
+            raise
+        merged_input = dict(input_data or {})
+        merged_input["answers"] = answers
+        return PermissionResultAllow(updated_input=merged_input)
+
+    async def _build_can_use_tool_callback(
+        self,
+        session_id: str,
+        managed_ref: list[Optional["ManagedSession"]] | None = None,
+    ):
+        """Create per-session can_use_tool callback (default-deny).
+
+        This is step 5 (final fallback) in the SDK permission chain:
+        Hooks → Deny rules → Permission mode → Allow rules → canUseTool.
+        Only reached when prior steps don't resolve the decision.
+
+        File access control uses the PreToolUse hook (step 1) because it
+        fires for ALL tool calls.  Read/Glob/Grep are resolved by allow
+        rules (step 4) and never reach this callback.
+
+        This callback handles AskUserQuestion (async user interaction) and
+        denies everything else as a whitelist fallback.
+
+        Args:
+            session_id: Initial session ID (may be temp_id for new sessions).
+            managed_ref: Mutable single-element list holding the ManagedSession.
+                When provided, the callback resolves the session via this
+                reference instead of looking up session_id in self.sessions,
+                so it survives the temp_id → sdk_id key swap.
+        """
+
+        async def _can_use_tool(
+            tool_name: str,
+            input_data: dict[str, Any],
+            _context: Any,
+        ) -> Any:
+            if PermissionResultAllow is None:
+                raise RuntimeError("claude_agent_sdk is not installed")
+
+            normalized_tool = str(tool_name or "").strip().lower()
+
+            if normalized_tool == "askuserquestion":
+                managed = managed_ref[0] if managed_ref else self.sessions.get(session_id)
+                return await self._handle_ask_user_question(
+                    managed,
+                    tool_name,
+                    input_data,
+                )
+
+            # Whitelist fallback: deny any tool that was not pre-approved
+            # by allowed_tools or settings.json allow rules.
+            if PermissionResultDeny is not None:
+                hint = (
+                    f"Yêu cầu gọi công cụ chưa được ủy quyền: {tool_name}\n"
+                    f"Dữ liệu: ({json.dumps(input_data, ensure_ascii=False)[:200]})\n\n"
+                    "QUY TẮC BẢO MẬT BASH:\n"
+                    "1. BẮT BUỘC bắt đầu bằng 'python .claude/skills/...'\n"
+                    "2. CẤM dùng 'cd', '&&', đường dẫn tuyệt đối (C:\\...), hoặc dấu xuyệt ngược '\\'.\n"
+                    "3. Chỉ sử dụng: 'python .claude/skills/<skill>/scripts/<script>.py <args>'\n\n"
+                    "Vui lòng sửa lại lệnh Bash của bạn cho đúng định dạng trên và thử lại."
+                )
+                return PermissionResultDeny(message=hint)
+            return PermissionResultAllow(updated_input=input_data)
+
+        return _can_use_tool
+
+    def _message_to_dict(self, message: Any) -> dict[str, Any]:
+        """Convert SDK message to dict for JSON serialization."""
+        msg_dict = self._serialize_value(message)
+
+        # Infer and add message type if not present
+        if isinstance(msg_dict, dict) and "type" not in msg_dict:
+            msg_type = self._infer_message_type(message)
+            if msg_type:
+                msg_dict["type"] = msg_type
+
+        # Inject precise subtype for typed task messages
+        if isinstance(msg_dict, dict):
+            class_name = type(message).__name__
+            subtype = self._TASK_MESSAGE_SUBTYPES.get(class_name)
+            if subtype:
+                msg_dict["subtype"] = subtype
+
+        return msg_dict
+
+    @staticmethod
+    def _build_user_echo_message(
+        text: str,
+        content_blocks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Build a synthetic user message for real-time UI echo.
+
+        When content_blocks is provided (e.g. image + text blocks), the echo
+        content is a list of blocks so the UI can render image thumbnails in
+        the bubble.  If no blocks are provided, content is the plain text string.
+        """
+        content: Any = content_blocks if content_blocks is not None else text
+        return {
+            "type": "user",
+            "content": content,
+            "uuid": f"local-user-{uuid4().hex}",
+            "timestamp": _utc_now_iso(),
+            "local_echo": True,
+        }
+
+    @staticmethod
+    def _prune_transient_buffer(managed: ManagedSession) -> None:
+        """Drop stale messages that should not leak into next round snapshots.
+
+        Removes:
+        - stream_event / runtime_status: transient streaming artifacts
+        - user / assistant / result: already persisted in SDK transcript;
+          keeping them causes duplicate turns because buffer messages lack
+          the uuid that transcript messages carry, so _merge_raw_messages
+          cannot deduplicate them.
+        """
+        if not managed.message_buffer:
+            return
+        managed.message_buffer = [
+            message
+            for message in managed.message_buffer
+            if message.get("type")
+            not in {
+                "stream_event",
+                "runtime_status",
+                "user",
+                "assistant",
+                "result",
+            }
+        ]
+
+    @staticmethod
+    def _build_runtime_status_message(
+        status: SessionStatus,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Build runtime-only status message for SSE wake-up."""
+        return {
+            "type": "runtime_status",
+            "status": status,
+            "subtype": status,
+            "stop_reason": None,
+            "is_error": status == "error",
+            "session_id": session_id,
+            "uuid": f"runtime-status-{uuid4().hex}",
+            "timestamp": _utc_now_iso(),
+        }
+
+    _extract_plain_user_content = staticmethod(extract_plain_user_content)
+
+    def _is_duplicate_user_echo(
+        self,
+        managed: ManagedSession,
+        message: dict[str, Any],
+    ) -> bool:
+        """Skip SDK-replayed user message if it matches local echo queue."""
+        if not managed.pending_user_echoes:
+            return False
+        incoming = self._extract_plain_user_content(message)
+        expected = managed.pending_user_echoes[0].strip()
+
+        # Image-only sentinel: the SDK parser drops image blocks, so the
+        # replayed UserMessage arrives with empty content (incoming is None).
+        if not incoming:
+            if message.get("type") != "user" or expected != self._IMAGE_ONLY_SENTINEL:
+                return False
+            managed.pending_user_echoes.pop(0)
+            return True
+
+        if incoming != expected:
+            return False
+        managed.pending_user_echoes.pop(0)
+        return True
+
+    async def _on_sdk_session_id_received(
+        self,
+        managed: ManagedSession,
+        message: Any,
+        msg_dict: dict[str, Any],
+    ) -> None:
+        """Handle sdk_session_id from stream. For new sessions: create DB record + signal event."""
+        sdk_id = self._extract_sdk_session_id(message, msg_dict)
+        if not sdk_id:
+            return
+        if managed.resolved_sdk_id is not None:
+            return  # Already registered
+
+        managed.resolved_sdk_id = sdk_id
+
+        # Only create DB record for new sessions (no existing meta)
+        if not managed.sdk_id_event.is_set():
+            # Run DB create and SDK tag in parallel (tag is independent file I/O)
+            tag_coro = None
+            if tag_session is not None:
+
+                async def _tag() -> None:
+                    try:
+                        await asyncio.to_thread(tag_session, sdk_id, f"project:{managed.project_name}")
+                    except Exception:
+                        logger.warning("tag_session failed for %s", sdk_id, exc_info=True)
+
+                tag_coro = _tag()
+            await asyncio.gather(
+                self.meta_store.create(managed.project_name, sdk_id),
+                *([] if tag_coro is None else [tag_coro]),
+            )
+            await self.meta_store.update_status(sdk_id, "running")
+            # Key swap: replace temp_id with real sdk_id in sessions dict
+            # BEFORE signaling the event. This prevents _finalize_turn from
+            # using the stale temp_id if it runs before send_new_session
+            # completes its own key swap.
+            old_id = managed.session_id
+            if old_id != sdk_id and old_id in self.sessions:
+                del self.sessions[old_id]
+                managed.session_id = sdk_id
+                self.sessions[sdk_id] = managed
+            managed.sdk_id_event.set()
+
+    @staticmethod
+    def _extract_sdk_session_id(message: Any, msg_dict: dict[str, Any]) -> str | None:
+        """Extract SDK session id from either serialized payload or raw object."""
+        sdk_id = None
+        if isinstance(msg_dict, dict):
+            sdk_id = msg_dict.get("session_id") or msg_dict.get("sessionId")
+        if sdk_id:
+            return str(sdk_id)
+        raw_sdk_id = getattr(message, "session_id", None) or getattr(message, "sessionId", None)
+        if raw_sdk_id:
+            return str(raw_sdk_id)
+        return None
+
+    def _infer_message_type(self, message: Any) -> str | None:
+        """Infer message type from SDK message class name."""
+        class_name = type(message).__name__
+        return self._MESSAGE_TYPE_MAP.get(class_name)
+
+    def _serialize_value(self, value: Any) -> Any:
+        """Recursively serialize a value to JSON-safe types."""
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+
+        if isinstance(value, dict):
+            return {k: self._serialize_value(v) for k, v in value.items()}
+
+        if isinstance(value, (list, tuple)):
+            return [self._serialize_value(item) for item in value]
+
+        # Pydantic models
+        if hasattr(value, "model_dump"):
+            dumped = value.model_dump()
+            return self._serialize_value(dumped)
+
+        # Dataclasses or objects with __dict__
+        if hasattr(value, "__dict__"):
+            return {k: self._serialize_value(v) for k, v in value.__dict__.items() if not k.startswith("_")}
+
+        # Fallback: convert to string
+        return str(value)
+
+    async def get_message_buffer_snapshot(self, session_id: str) -> list[dict[str, Any]]:
+        """Get current message buffer without creating a new SDK connection."""
+        managed = self.sessions.get(session_id)
+        if not managed:
+            return []
+        return list(managed.message_buffer)
+
+    def get_buffered_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """Sync helper for consumers that only need in-memory buffer state."""
+        managed = self.sessions.get(session_id)
+        if not managed:
+            return []
+        return list(managed.message_buffer)
+
+    async def get_pending_questions_snapshot(self, session_id: str) -> list[dict[str, Any]]:
+        """Get unresolved AskUserQuestion payloads for reconnect."""
+        managed = self.sessions.get(session_id)
+        if not managed:
+            return []
+        return managed.get_pending_question_payloads()
+
+    async def answer_user_question(
+        self,
+        session_id: str,
+        question_id: str,
+        answers: dict[str, str],
+    ) -> None:
+        """Resolve AskUserQuestion answers for a running session."""
+        managed = self.sessions.get(session_id)
+        if managed is None:
+            raise ValueError("Phiên không hoạt động hoặc không có câu hỏi chờ trả lời")
+        if managed.status != "running":
+            raise ValueError("Phiên không hoạt động hoặc không có câu hỏi chờ trả lời")
+        if not managed.resolve_pending_question(question_id, answers):
+            raise ValueError("Không tìm thấy câu hỏi chờ trả lời")
+
+    async def subscribe(self, session_id: str, replay_buffer: bool = True) -> asyncio.Queue:
+        """Subscribe to session messages. Returns queue for SSE."""
+        managed = await self.get_or_connect(session_id)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+
+        if replay_buffer:
+            # Replay buffered messages
+            for msg in managed.message_buffer:
+                try:
+                    queue.put_nowait(msg)
+                except asyncio.QueueFull:
+                    break
+
+        managed.subscribers.add(queue)
+        return queue
+
+    async def unsubscribe(self, session_id: str, queue: asyncio.Queue) -> None:
+        """Unsubscribe from session messages."""
+        if session_id in self.sessions:
+            self.sessions[session_id].subscribers.discard(queue)
+
+    async def get_status(self, session_id: str) -> SessionStatus | None:
+        """Get session status."""
+        if session_id in self.sessions:
+            return self.sessions[session_id].status
+        meta = await self.meta_store.get(session_id)
+        return meta.status if meta else None
+
+    async def shutdown_gracefully(self, timeout: float = 30.0) -> None:
+        """Gracefully shutdown all sessions."""
+        # 取消巡检任务
+        patrol = getattr(self, "_patrol_task", None)
+        if patrol and not patrol.done():
+            patrol.cancel()
+
+        for session_id in list(self.sessions.keys()):
+            managed = self.sessions.get(session_id)
+            if managed is None:
+                continue
+            if managed.status == "running":
+                # Wait for current turn
+                if managed.consumer_task and not managed.consumer_task.done():
+                    try:
+                        await asyncio.wait_for(managed.consumer_task, timeout=timeout)
+                    except TimeoutError:
+                        try:
+                            await managed.client.interrupt()
+                        except Exception:
+                            logger.warning(
+                                "优雅关闭时中断会话失败 session_id=%s",
+                                session_id,
+                                exc_info=True,
+                            )
+                        managed.consumer_task.cancel()
+
+                managed.status = "interrupted"
+                await self.meta_store.update_status(session_id, "interrupted")
+
+            try:
+                await self._disconnect_session(
+                    session_id,
+                    reason="session shutdown",
+                )
+            except Exception:
+                logger.warning(
+                    "优雅关闭会话失败 session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
