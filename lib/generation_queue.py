@@ -68,9 +68,15 @@ class GenerationQueue:
                 user_id=user_id,
             )
         if not result.get("deduped"):
+<<<<<<< HEAD
             logger.info("Nhiệm vụ đã đưa vào hàng đợi task_id=%s type=%s", result["task_id"], task_type)
         else:
             logger.debug("Nhiệm vụ bị trùng lặp (deduped) task_id=%s", result["task_id"])
+=======
+            logger.info("任务入队 task_id=%s type=%s", result["task_id"], task_type)
+        else:
+            logger.debug("任务去重 task_id=%s", result["task_id"])
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         return result
 
     async def claim_next_task(self, media_type: str) -> dict[str, Any] | None:
@@ -79,7 +85,11 @@ class GenerationQueue:
             repo = TaskRepository(session)
             task = await repo.claim_next(media_type)
         if task:
+<<<<<<< HEAD
             logger.debug("Nhiệm vụ đã được tiếp nhận task_id=%s", task["task_id"])
+=======
+            logger.debug("任务被领取 task_id=%s", task["task_id"])
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         return task
 
     async def requeue_running_tasks(self, *, limit: int = 1000) -> int:
@@ -88,7 +98,11 @@ class GenerationQueue:
             repo = TaskRepository(session)
             recovered = await repo.requeue_running(limit=limit)
         if recovered > 0:
+<<<<<<< HEAD
             logger.warning("Đã thu hồi %d nhiệm vụ đang chạy (running)", recovered)
+=======
+            logger.warning("回收 %d 个 running 任务", recovered)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         return recovered
 
     async def mark_task_succeeded(self, task_id: str, result: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -97,7 +111,11 @@ class GenerationQueue:
             repo = TaskRepository(session)
             task = await repo.mark_succeeded(task_id, result)
         if task:
+<<<<<<< HEAD
             logger.info("Nhiệm vụ thành công task_id=%s", task_id)
+=======
+            logger.info("任务成功 task_id=%s", task_id)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         return task
 
     async def mark_task_failed(self, task_id: str, error_message: str) -> dict[str, Any] | None:
@@ -106,7 +124,11 @@ class GenerationQueue:
             repo = TaskRepository(session)
             task = await repo.mark_failed(task_id, error_message)
         if task:
+<<<<<<< HEAD
             logger.warning("Nhiệm vụ thất bại task_id=%s error=%s", task_id, error_message[:200])
+=======
+            logger.warning("任务失败 task_id=%s error=%s", task_id, error_message[:200])
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         return task
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:

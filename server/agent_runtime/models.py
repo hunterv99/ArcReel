@@ -11,7 +11,11 @@ SessionStatus = Literal["idle", "running", "completed", "error", "interrupted"]
 class SessionMeta(BaseModel):
     """Session metadata stored in database."""
 
+<<<<<<< HEAD
     id: str  # Công khai bên ngoài, điền giá trị sdk_session_id
+=======
+    id: str  # 对外暴露，填充 sdk_session_id 值
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     project_name: str
     title: str = ""
     status: SessionStatus = "idle"

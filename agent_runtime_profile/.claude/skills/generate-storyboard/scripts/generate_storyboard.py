@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+<<<<<<< HEAD
 Storyboard Generator - Tạo ảnh phân cảnh qua hàng đợi
 
 Cả hai chế độ đều tạo ảnh phân cảnh thông qua generation worker:
@@ -8,11 +9,25 @@ Cả hai chế độ đều tạo ảnh phân cảnh thông qua generation worke
 
 Usage:
     # Chế độ narration: Nộp yêu cầu tạo ảnh phân cảnh (mặc định)
+=======
+Storyboard Generator - 通过生成队列生成分镜图
+
+两种模式统一通过 generation worker 生成分镜图：
+- narration 模式（说书+画面）：生成 9:16 竖屏分镜图
+- drama 模式（剧集动画）：生成 16:9 横屏分镜图
+
+Usage:
+    # narration 模式：提交分镜图生成任务（默认）
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     python generate_storyboard.py <project_name> <script_file>
     python generate_storyboard.py <project_name> <script_file> --scene E1S05
     python generate_storyboard.py <project_name> <script_file> --segment-ids E1S01 E1S02
 
+<<<<<<< HEAD
     # Chế độ drama: Nộp yêu cầu tạo ảnh phân cảnh
+=======
+    # drama 模式：提交分镜图生成任务
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     python generate_storyboard.py <project_name> <script_file>
     python generate_storyboard.py <project_name> <script_file> --scene E1S05
     python generate_storyboard.py <project_name> <script_file> --scene-ids E1S01 E1S02
@@ -40,7 +55,11 @@ from lib.storyboard_sequence import (
 
 
 class FailureRecorder:
+<<<<<<< HEAD
     """Trình quản lý ghi nhận lỗi (Thread-safe)"""
+=======
+    """失败记录管理器（线程安全）"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     def __init__(self, output_dir: Path):
         self.output_path = output_dir / "generation_failures.json"
@@ -55,7 +74,11 @@ class FailureRecorder:
         attempts: int = 3,
         **extra,
     ):
+<<<<<<< HEAD
         """Ghi lại một lỗi"""
+=======
+        """记录一次失败"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         with self._lock:
             self.failures.append(
                 {
@@ -69,7 +92,11 @@ class FailureRecorder:
             )
 
     def save(self):
+<<<<<<< HEAD
         """Lưu lịch sử lỗi vào tệp"""
+=======
+        """保存失败记录到文件"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         if not self.failures:
             return
 
@@ -84,6 +111,7 @@ class FailureRecorder:
             with open(self.output_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
+<<<<<<< HEAD
         print(f"\n⚠️  Lịch sử lỗi đã được lưu: {self.output_path}")
 
     def get_failed_scene_ids(self) -> list[str]:
@@ -92,10 +120,21 @@ class FailureRecorder:
 
 
 # ==================== Hàm xây dựng Prompt ====================
+=======
+        print(f"\n⚠️  失败记录已保存: {self.output_path}")
+
+    def get_failed_scene_ids(self) -> list[str]:
+        """获取所有失败的场景 ID（用于重新生成）"""
+        return [f["scene_id"] for f in self.failures if f["type"] == "scene"]
+
+
+# ==================== Prompt 构建函数 ====================
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
 
 def get_items_from_script(script: dict) -> tuple:
     """
+<<<<<<< HEAD
     Lấy danh sách cảnh/đoạn và tên trường ID dựa trên chế độ nội dung
 
     Args:
@@ -103,6 +142,15 @@ def get_items_from_script(script: dict) -> tuple:
 
     Returns:
         Tuple (items_list, id_field, char_field, clue_field)
+=======
+    根据内容模式获取场景/片段列表和 ID 字段名
+
+    Args:
+        script: 剧本数据
+
+    Returns:
+        (items_list, id_field, char_field, clue_field) 元组
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     return get_storyboard_items(script)
 
@@ -119,6 +167,7 @@ def build_storyboard_prompt(
     content_mode: str = "narration",
 ) -> str:
     """
+<<<<<<< HEAD
     Xây dựng prompt nhiệm vụ ảnh phân cảnh (Dùng chung cho cả narration và drama)
 
     Hỗ trợ định dạng prompt có cấu trúc: Nếu image_prompt là dict, nó sẽ được chuyển sang định dạng YAML.
@@ -128,6 +177,17 @@ def build_storyboard_prompt(
         raise ValueError(f"Đoạn/Cảnh {segment[id_field]} thiếu trường image_prompt")
 
     # Xây dựng tiền tố phong cách
+=======
+    构建分镜图任务 prompt（通用，适用于 narration 和 drama 模式）
+
+    支持结构化 prompt 格式：如果 image_prompt 是 dict，则转换为 YAML 格式。
+    """
+    image_prompt = segment.get("image_prompt", "")
+    if not image_prompt:
+        raise ValueError(f"片段/场景 {segment[id_field]} 缺少 image_prompt 字段")
+
+    # 构建风格前缀
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     style_parts = []
     if style:
         style_parts.append(f"Style: {style}")
@@ -135,6 +195,7 @@ def build_storyboard_prompt(
         style_parts.append(f"Visual style: {style_description}")
     style_prefix = "\n".join(style_parts) + "\n\n" if style_parts else ""
 
+<<<<<<< HEAD
     # Chế độ narration thêm hậu tố bố cục màn hình dọc, chế độ drama được kiểm soát qua tham số API aspect_ratio
     composition_suffix = ""
     if content_mode == "narration":
@@ -144,6 +205,17 @@ def build_storyboard_prompt(
             composition_suffix = " Bố cục màn hình dọc."
 
     # Kiểm tra xem có phải định dạng có cấu trúc không
+=======
+    # narration 模式追加竖屏构图后缀，drama 模式通过 API aspect_ratio 参数控制
+    composition_suffix = ""
+    if content_mode == "narration":
+        if is_structured_image_prompt(image_prompt):
+            composition_suffix = "\n竖屏构图。"
+        else:
+            composition_suffix = " 竖屏构图。"
+
+    # 检测是否为结构化格式
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     if is_structured_image_prompt(image_prompt):
         yaml_prompt = image_prompt_to_yaml(image_prompt, style)
         return f"{style_prefix}{yaml_prompt}{composition_suffix}"
@@ -213,10 +285,17 @@ def _load_project_metadata(pm: ProjectManager, project_name: str) -> dict | None
         return None
     try:
         data = pm.load_project(project_name)
+<<<<<<< HEAD
         print("📁 Đã tải siêu dữ liệu dự án (project.json)")
         return data
     except Exception as e:
         print(f"⚠️  Không thể tải siêu dữ liệu dự án: {e}")
+=======
+        print("📁 已加载项目元数据 (project.json)")
+        return data
+    except Exception as e:
+        print(f"⚠️  无法加载项目元数据: {e}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         return None
 
 
@@ -242,10 +321,17 @@ def generate_storyboard_direct(
     segment_ids: list[str] | None = None,
 ) -> tuple[list[Path], list[tuple[str, str]]]:
     """
+<<<<<<< HEAD
     Nộp nhiệm vụ tạo ảnh phân cảnh qua hàng đợi (Dùng chung cho cả narration và drama).
 
     Returns:
         Tuple (Danh sách đường dẫn thành công, Danh sách thất bại)
+=======
+    通过生成队列提交分镜图任务（narration 和 drama 模式通用）。
+
+    Returns:
+        (成功路径列表, 失败列表) 元组
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     pm, project_name = ProjectManager.from_cwd()
     script = pm.load_script(project_name, script_filename)
@@ -257,7 +343,11 @@ def generate_storyboard_direct(
     segments_to_process = _select_storyboard_items(items, id_field, segment_ids)
 
     if not segments_to_process:
+<<<<<<< HEAD
         print("✨ Ảnh phân cảnh của tất cả các đoạn đều đã được tạo")
+=======
+        print("✨ 所有片段的分镜图都已生成")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         return [], []
 
     characters = project_data.get("characters", {}) if project_data else {}
@@ -286,12 +376,20 @@ def generate_storyboard_direct(
         script_filename=script_filename,
     )
 
+<<<<<<< HEAD
     print(f"📷 Nộp hàng loạt {len(specs)} yêu cầu ảnh phân cảnh vào hàng đợi...")
+=======
+    print(f"📷 批量提交 {len(specs)} 个分镜图到生成队列...")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     recorder = FailureRecorder(project_dir / "storyboards")
 
     def on_success(br: BatchTaskResult) -> None:
+<<<<<<< HEAD
         print(f"✅ Tạo ảnh phân cảnh: {br.resource_id} hoàn tất")
+=======
+        print(f"✅ 分镜图生成: {br.resource_id} 完成")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     def on_failure(br: BatchTaskResult) -> None:
         recorder.record_failure(
@@ -300,7 +398,11 @@ def generate_storyboard_direct(
             error=br.error or "unknown",
             attempts=3,
         )
+<<<<<<< HEAD
         print(f"❌ Tạo ảnh phân cảnh: {br.resource_id} thất bại - {br.error}")
+=======
+        print(f"❌ 分镜图生成: {br.resource_id} 失败 - {br.error}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     successes, failures = batch_enqueue_and_wait_sync(
         project_name=project_name,
@@ -316,6 +418,7 @@ def generate_storyboard_direct(
 
 
 def main():
+<<<<<<< HEAD
     parser = argparse.ArgumentParser(description="Tạo ảnh phân cảnh")
     parser.add_argument("script", help="Tên tệp kịch bản")
 
@@ -323,18 +426,37 @@ def main():
     parser.add_argument("--scene", help="Chỉ định ID của một cảnh (Chế độ một cảnh)")
     parser.add_argument("--scene-ids", nargs="+", help="Chỉ định các ID cảnh")
     parser.add_argument("--segment-ids", nargs="+", help="Chỉ định các ID đoạn (Bí danh chế độ narration)")
+=======
+    parser = argparse.ArgumentParser(description="生成分镜图")
+    parser.add_argument("script", help="剧本文件名")
+
+    # 辅助参数
+    parser.add_argument("--scene", help="指定单个场景 ID（单场景模式）")
+    parser.add_argument("--scene-ids", nargs="+", help="指定场景 ID")
+    parser.add_argument("--segment-ids", nargs="+", help="指定片段 ID（narration 模式别名）")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     args = parser.parse_args()
 
     try:
+<<<<<<< HEAD
         # Kiểm tra content_mode
+=======
+        # 检测 content_mode
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         pm, project_name = ProjectManager.from_cwd()
         script = pm.load_script(project_name, args.script)
         content_mode = script.get("content_mode", "narration")
 
+<<<<<<< HEAD
         print(f"🚀 Chế độ {content_mode}: Tạo ảnh phân cảnh qua hàng đợi")
 
         # Gộp tham số --scene-ids và --segment-ids
+=======
+        print(f"🚀 {content_mode} 模式：通过队列生成分镜图")
+
+        # 合并 --scene-ids 和 --segment-ids 参数
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         if args.scene:
             segment_ids = [args.scene]
         else:
@@ -344,12 +466,21 @@ def main():
             args.script,
             segment_ids=segment_ids,
         )
+<<<<<<< HEAD
         print(f"\n📊 Tạo hoàn tất: {len(results)} ảnh phân cảnh")
         if failed:
             print(f"⚠️  Thất bại: {len(failed)}")
 
     except Exception as e:
         print(f"❌ Lỗi: {e}")
+=======
+        print(f"\n📊 生成完成: {len(results)} 个分镜图")
+        if failed:
+            print(f"⚠️  失败: {len(failed)} 个")
+
+    except Exception as e:
+        print(f"❌ 错误: {e}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         sys.exit(1)
 
 

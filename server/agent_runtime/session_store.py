@@ -14,7 +14,11 @@ from server.agent_runtime.models import SessionMeta, SessionStatus
 def _dict_to_session(d: dict) -> SessionMeta:
     """Convert a repository dict to a SessionMeta dataclass."""
     return SessionMeta(
+<<<<<<< HEAD
         id=d["sdk_session_id"],  # ID nội bộ DB không công khai, sử dụng thống nhất sdk_session_id với bên ngoài
+=======
+        id=d["sdk_session_id"],  # DB 内部 id 不暴露，对外统一用 sdk_session_id
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         project_name=d["project_name"],
         title=d.get("title") or "",
         status=d["status"],

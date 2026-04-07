@@ -21,10 +21,17 @@ frontend/ (React SPA)  →  server/ (FastAPI)  →  lib/ (Thư viện lõi)
 ```bash
 # Backend
 uv run python -m pytest                              # Kiểm thử (-v đơn tệp / -k từ khóa / --cov độ bao phủ)
+<<<<<<< HEAD
 uv run python -m ruff check . && uv run python -m ruff format .          # lint + format
 uv sync                                              # Cài đặt phụ thuộc
 uv run python -m alembic upgrade head                          # Di chuyển cơ sở dữ liệu
 uv run python -m alembic revision --autogenerate -m "desc"     # Tạo file di chuyển
+=======
+uv run ruff check . && uv run ruff format .          # lint + format
+uv sync                                              # Cài đặt phụ thuộc
+uv run alembic upgrade head                          # Di chuyển cơ sở dữ liệu
+uv run alembic revision --autogenerate -m "desc"     # Tạo file di chuyển
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
 # Frontend (cd frontend &&)
 pnpm build       # Build sản xuất (bao gồm typecheck)
@@ -164,3 +171,53 @@ Phụ thuộc công cụ bên ngoài: `ffmpeg` (ghép nối video và hậu kỳ
 - Phạm vi kiểm thử: `lib/` và `server/`, yêu cầu CI ≥80%
 - Các fixture dùng chung trong `tests/conftest.py`, factory trong `tests/factories.py`, fake trong `tests/fakes.py`
 - Phụ thuộc test trong `[dependency-groups] dev`, `uv sync` cài đặt mặc định, hình ảnh production loại trừ qua `--no-dev`
+<<<<<<< HEAD
+=======
+nerationQueue 入队，由 GenerationWorker 异步处理。
+`generation_queue_client.py` 的 `enqueue_and_wait()` 封装入队 + 等待完成。
+
+### Pydantic 数据模型
+
+`lib/script_models.py` 定义 `NarrationSegment` 和 `DramaScene`，用于剧本验证。
+`lib/data_validator.py` 验证 `project.json` 和剧集 JSON 的结构与引用完整性。
+
+## 智能体运行环境
+
+智能体专用配置（skills、agents、系统 prompt）位于 `agent_runtime_profile/` 目录，
+与开发态 `.claude/` 物理分离。
+
+### Skill 维护
+
+```bash
+# 触发率评估（需要 anthropic SDK：uv pip install anthropic）
+PYTHONPATH=~/.claude/plugins/cache/claude-plugins-official/skill-creator/*/skills/skill-creator:$PYTHONPATH \
+  uv run python -m scripts.run_eval \
+  --eval-set <eval-set.json> \
+  --skill-path agent_runtime_profile/.claude/skills/<skill-name> \
+  --model sonnet --runs-per-query 2 --verbose
+```
+
+#### Gotchas
+
+- **SKILL.md 与脚本同步**：修改 skill 脚本时需同步更新 SKILL.md，反之亦然，二者必须保持一致
+
+## 环境配置
+
+复制 `.env.example` 到 `.env`，设置认证参数（`AUTH_USERNAME`/`AUTH_PASSWORD`/`AUTH_TOKEN_SECRET`）。
+API Key、后端选择、模型配置等通过 WebUI 配置页（`/settings`）管理。
+外部工具依赖：`ffmpeg`（视频拼接与后期处理）。
+
+### 代码质量
+
+**ruff**（lint + format）：
+- 规则集：`E`/`F`/`I`/`UP`，忽略 `E402`（既有模式）和 `E501`（由 formatter 管理）
+- line-length：120
+- 排除 `.worktrees`、`.claude/worktrees` 目录
+- CI 中强制检查：`ruff check . && ruff format --check .`
+
+**pytest**：
+- `asyncio_mode = "auto"`（无需手动标记 async 测试）
+- 测试覆盖范围：`lib/` 和 `server/`，CI 要求 ≥80%
+- 共用 fixtures 在 `tests/conftest.py`，工厂在 `tests/factories.py`，fakes 在 `tests/fakes.py`
+- test 依赖在 `[dependency-groups] dev` 中，`uv sync` 默认安装，生产镜像通过 `--no-dev` 排除
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3

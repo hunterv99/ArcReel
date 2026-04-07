@@ -52,7 +52,11 @@ except ImportError:
 
 
 class SessionCapacityError(Exception):
+<<<<<<< HEAD
     """Tất cả các slot đồng thời đã bị chiếm bởi các phiên đang chạy, không thể tạo kết nối mới."""
+=======
+    """所有并发槽位已被 running 会话占满，无法创建新连接。"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     pass
 
@@ -75,7 +79,11 @@ class PendingQuestion:
 class ManagedSession:
     """A managed ClaudeSDKClient session."""
 
+<<<<<<< HEAD
     session_id: str  # sdk_session_id (phiên đang tồn tại) hoặc UUID tạm thời (phiên mới đang đợi)
+=======
+    session_id: str  # sdk_session_id（已有会话）或临时 UUID（新会话等待中）
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     client: Any  # ClaudeSDKClient
     status: SessionStatus = "idle"
     project_name: str = ""  # 用于 _register_new_session
@@ -309,11 +317,16 @@ class SessionManager:
                     self.max_turns = int(raw)
                     return
         except Exception:
+<<<<<<< HEAD
             logger.warning("Tải cấu hình trợ lý từ DB thất bại, đang sử dụng giá trị từ biến môi trường", exc_info=True)
+=======
+            logger.warning("从 DB 加载 assistant 配置失败，回退到环境变量", exc_info=True)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         # Fallback to env var
         self._load_config()
 
     _PERSONA_PROMPT = """\
+<<<<<<< HEAD
 ## Danh tính
 
 Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên nghiệp. Nhiệm vụ của bạn là chuyển đổi tiểu thuyết thành nội dung video ngắn có thể xuất bản.
@@ -326,6 +339,18 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
 - Bạn là cộng sự sản xuất video của người dùng, làm việc chuyên nghiệp, thân thiện và hiệu quả
 - QUAN TRỌNG: Nếu bạn sử dụng quá trình Suy nghĩ (Thinking/Thought), bạn PHẢI LUÔN trình bày câu trả lời chính thức của mình ra bên ngoài (hoặc sau khi kết thúc) khối suy nghĩ đó. Không bao giờ được dùng khối suy nghĩ thay cho câu trả lời.
 - QUAN TRỌNG VỀ CÔNG CỤ: Khi bạn muốn thực hiện hành động (đọc file, dùng skill, v.v.), bạn KHÔNG ĐƯỢC chỉ viết câu nói suông như "Tôi sẽ khởi chạy công cụ...". BẠN BẮT BUỘC PHẢI THỰC SỰ GỌI CÔNG CỤ ĐÓ thông qua định dạng tool call chuẩn của hệ thống. Nếu bạn chỉ nói mà không gọi tool, hệ thống sẽ không phản hồi!"""
+=======
+## 身份
+
+你是 ArcReel 智能体，一个专业的 AI 视频内容创作助手。你的职责是将小说转化为可发布的短视频内容。
+
+## 行为准则
+
+- 主动引导用户完成视频创作工作流，而不仅仅被动回答问题
+- 遇到不确定的创作决策时，向用户提出选项并给出建议，而不是自行决定
+- 涉及多步骤任务时，使用 TodoWrite 跟踪进度并向用户汇报
+- 你是用户的视频制作搭档，专业、友善、高效"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     def _build_append_prompt(self, project_name: str) -> str:
         """Build the append portion for SystemPromptPreset.
@@ -365,6 +390,7 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             return ""
 
         parts = [
+<<<<<<< HEAD
             "## Ngữ cảnh dự án hiện tại",
             "",
         ]
@@ -395,6 +421,32 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             "- CẤM sử dụng dấu xuyệt ngược `\\` trong lệnh Bash, chỉ sử dụng dấu xuyệt xuôi `/` cho đường dẫn (ví dụ: `.claude/skills/`)."
         )
         parts.append("- Lệnh Bash phải viết trên một dòng, cấm sử dụng `\\` để xuống dòng, các tham số JSON sử dụng định dạng thu gọn (compact).")
+=======
+            "## 当前项目上下文",
+            "",
+        ]
+
+        # TODO: 当前定位是自部署服务，这里直接拼接项目元数据以保持实现简单。
+        # TODO: 若后续演进为 SaaS / 多租户服务，需要把 title/style/overview 等用户输入
+        # TODO: 按“非指令上下文”做边界化或转义，降低 prompt injection 风险。
+        parts.append(f"- 项目标识：{project_name}")
+        if title := config.get("title"):
+            parts.append(f"- 项目标题：{title}")
+        if mode := config.get("content_mode"):
+            parts.append(f"- 内容模式：{mode}")
+        if style := config.get("style"):
+            parts.append(f"- 视觉风格：{style}")
+        if style_desc := config.get("style_description"):
+            parts.append(f"- 风格描述：{style_desc}")
+        parts.append(f"- 项目目录（即当前工作目录 cwd）：{project_cwd}")
+        parts.append(
+            "- Read/Edit/Write 等工具的 file_path 参数必须使用绝对路径，不要使用相对路径，也不要把项目标题当成目录名。"
+        )
+        parts.append(
+            "- Bash 调用 skill 脚本时必须使用相对路径（如 `python .claude/skills/.../script.py`），不要转换为绝对路径。"
+        )
+        parts.append("- Bash 命令必须写在单行，禁止使用 `\\` 换行，JSON 参数使用紧凑格式。")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
         self._append_overview_section(parts, config.get("overview", {}))
 
@@ -406,6 +458,7 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         if not isinstance(overview, dict) or not overview:
             return
         parts.append("")
+<<<<<<< HEAD
         parts.append("### Tổng quan dự án")
         if synopsis := overview.get("synopsis"):
             parts.append(synopsis)
@@ -415,6 +468,17 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             parts.append(f"- Chủ đề: {theme}")
         if world := overview.get("world_setting"):
             parts.append(f"- Thế giới quan: {world}")
+=======
+        parts.append("### 项目概述")
+        if synopsis := overview.get("synopsis"):
+            parts.append(synopsis)
+        if genre := overview.get("genre"):
+            parts.append(f"- 题材：{genre}")
+        if theme := overview.get("theme"):
+            parts.append(f"- 主题：{theme}")
+        if world := overview.get("world_setting"):
+            parts.append(f"- 世界观：{world}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     def _build_options(
         self,
@@ -524,7 +588,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "permissionDecision": "deny",
+<<<<<<< HEAD
                         "permissionDecisionReason": ("Truy cập bị từ chối: Không được phép truy cập các đường dẫn nằm ngoài dự án hiện tại và thư mục công cộng"),
+=======
+                        "permissionDecisionReason": ("访问被拒绝：不允许访问当前项目和公共目录之外的路径"),
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     },
                 }
 
@@ -586,7 +654,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 new_string = tool_input.get("new_string", "")
                 if not old_string:
                     logger.info(
+<<<<<<< HEAD
                         "JSON validation hook: tool=Edit file=%s skipping=old_string_is_empty",
+=======
+                        "JSON 校验 hook: tool=Edit file=%s skip=old_string为空",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                         file_path,
                     )
                     return {}
@@ -599,7 +671,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 if _has_curly_quotes(new_string):
                     curly_found = [f"U+{ord(ch):04X}" for ch in new_string if ch in _CURLY_QUOTES]
                     logger.warning(
+<<<<<<< HEAD
                         "PreToolUse JSON validation blocked (curly quotes): file=%s curly=%s",
+=======
+                        "PreToolUse JSON 校验拦截(弯引号): file=%s curly=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                         file_path,
                         curly_found[:5],
                     )
@@ -608,11 +684,19 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                             "hookEventName": "PreToolUse",
                             "permissionDecision": "deny",
                             "permissionDecisionReason": (
+<<<<<<< HEAD
                                 "Thao tác bị chặn: new_string chứa dấu ngoặc kép cong"
                                 "（\u201c hoặc \u201d），"
                                 "điều này sẽ phá vỡ định dạng JSON."
                                 "Vui lòng thay thế tất cả dấu ngoặc kép cong bằng dấu ngoặc kép"
                                 "tiêu chuẩn ASCII (U+0022) rồi thử lại."
+=======
+                                "操作被阻止：new_string 包含弯引号"
+                                "（\u201c 或 \u201d），"
+                                "这会破坏 JSON 格式。"
+                                "请将所有弯引号替换为标准 ASCII "
+                                "双引号 (U+0022) 后重试。"
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                             ),
                         },
                     }
@@ -623,7 +707,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                     current = resolved.read_text(encoding="utf-8")
                 except OSError as read_err:
                     logger.info(
+<<<<<<< HEAD
                         "JSON validation hook: tool=Edit file=%s skipping=read_failed error=%s",
+=======
+                        "JSON 校验 hook: tool=Edit file=%s skip=读取失败 error=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                         file_path,
                         read_err,
                     )
@@ -636,7 +724,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 if old_string not in current:
                     # Edit tool will fail on its own; no need to intervene.
                     logger.info(
+<<<<<<< HEAD
                         "JSON validation hook: tool=Edit file=%s skipping=old_string_mismatch old_len=%d new_len=%d file_len=%d",
+=======
+                        "JSON 校验 hook: tool=Edit file=%s skip=old_string未匹配 old_len=%d new_len=%d file_len=%d",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                         file_path,
                         len(old_string),
                         len(new_string),
@@ -651,7 +743,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                     simulated = current.replace(old_string, new_string, 1)
 
                 logger.info(
+<<<<<<< HEAD
                     "JSON validation hook: tool=Edit file=%s matched=True "
+=======
+                    "JSON 校验 hook: tool=Edit file=%s matched=True "
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     "old_len=%d new_len=%d simulated_len=%d replace_all=%s",
                     file_path,
                     len(old_string),
@@ -666,14 +762,22 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             try:
                 json.loads(simulated)
                 logger.info(
+<<<<<<< HEAD
                     "JSON validation hook: tool=%s file=%s result=valid",
+=======
+                    "JSON 校验 hook: tool=%s file=%s result=valid",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     tool_name,
                     file_path,
                 )
                 return {}
             except json.JSONDecodeError as exc:
                 logger.warning(
+<<<<<<< HEAD
                     "PreToolUse JSON validation blocked: file=%s tool=%s error=%s",
+=======
+                    "PreToolUse JSON 校验拦截: file=%s tool=%s error=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     file_path,
                     tool_name,
                     exc,
@@ -683,10 +787,17 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                         "hookEventName": "PreToolUse",
                         "permissionDecision": "deny",
                         "permissionDecisionReason": (
+<<<<<<< HEAD
                             f"Thao tác bị chặn: Việc thực hiện {tool_name} lần này sẽ khiến {file_path} "
                             f"trở thành JSON không hợp lệ. Lỗi：{exc}。"
                             "Vui lòng kiểm tra xem nội dung nhập vào có chứa dấu ngoặc kép chưa được thoát hoặc các lỗi"
                             "cú pháp JSON khác không, sau đó sửa lại rồi thử lại."
+=======
+                            f"操作被阻止：此次 {tool_name} 会导致 {file_path} "
+                            f"变成无效 JSON。错误：{exc}。"
+                            "请检查你的输入内容中是否包含未转义的双引号或其他"
+                            "JSON 语法问题，修正后重试。"
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                         ),
                     },
                 }
@@ -722,7 +833,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                     tool_use_id,
                 )
             except Exception:
+<<<<<<< HEAD
                 logger.exception("Ngoại lệ trong PostToolUse JSON validation hook")
+=======
+                logger.exception("PostToolUse JSON 校验 hook 异常")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 return {}
 
         async def _json_post_validation_impl(
@@ -750,7 +865,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             try:
                 json.loads(actual)
                 logger.info(
+<<<<<<< HEAD
                     "PostToolUse JSON validation: tool=%s file=%s result=valid",
+=======
+                    "PostToolUse JSON 校验: tool=%s file=%s result=valid",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     tool_name,
                     file_path,
                 )
@@ -764,20 +883,32 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                         backup_path.write_text(backup_content, encoding="utf-8")
                         restored = True
                         logger.warning(
+<<<<<<< HEAD
                             "PostToolUse JSON validation blocked and restored: file=%s tool=%s error=%s backup_restored=True",
+=======
+                            "PostToolUse JSON 校验拦截并恢复: file=%s tool=%s error=%s backup_restored=True",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                             file_path,
                             tool_name,
                             exc,
                         )
                     except OSError as write_err:
                         logger.error(
+<<<<<<< HEAD
                             "PostToolUse JSON backup restore failed: file=%s error=%s",
+=======
+                            "PostToolUse JSON 备份恢复失败: file=%s error=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                             file_path,
                             write_err,
                         )
                 else:
                     logger.warning(
+<<<<<<< HEAD
                         "PostToolUse JSON validation blocked (no backup): file=%s tool=%s error=%s",
+=======
+                        "PostToolUse JSON 校验拦截(无备份): file=%s tool=%s error=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                         file_path,
                         tool_name,
                         exc,
@@ -785,6 +916,7 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
 
                 if restored:
                     ctx = (
+<<<<<<< HEAD
                         f"⚠ Đã phát hiện hỏng hóc JSON và đã khôi phục：{tool_name} làm cho "
                         f"{file_path} trở thành JSON không hợp lệ（{exc}）。"
                         "Tệp đã được khôi phục về trạng thái trước khi chỉnh sửa, vui lòng sửa lỗi và thử lại."
@@ -795,6 +927,18 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                         f"{file_path} trở thành JSON không hợp lệ（{exc}）。"
                         "Tệp hiện vẫn đang ở trạng thái hỏng (không có bản sao lưu khả dụng hoặc ghi đè bản sao lưu thất bại)，"
                         "vui lòng đọc tệp xác nhận nội dung, sau đó tự sửa thủ công thành JSON hợp lệ."
+=======
+                        f"⚠ JSON 损坏已检测并回滚：{tool_name} 导致 "
+                        f"{file_path} 变成无效 JSON（{exc}）。"
+                        "文件已恢复到编辑前状态，请修正后重试。"
+                    )
+                else:
+                    ctx = (
+                        f"⚠ JSON 损坏已检测但无法恢复：{tool_name} 导致 "
+                        f"{file_path} 变成无效 JSON（{exc}）。"
+                        "文件当前仍为损坏状态（无可用备份或恢复写入失败），"
+                        "请先读取文件确认内容，再手动修正为合法 JSON。"
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     )
 
                 return {
@@ -862,7 +1006,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         try:
             await managed.client.query(prompt)
         except Exception:
+<<<<<<< HEAD
             logger.exception("Gửi tin nhắn phiên mới thất bại")
+=======
+            logger.exception("新会话消息发送失败")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             del self.sessions[temp_id]
             try:
                 await client.disconnect()
@@ -874,9 +1022,15 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
 
         # Wait for sdk_session_id with timeout
         try:
+<<<<<<< HEAD
             await asyncio.wait_for(managed.sdk_id_event.wait(), timeout=60.0)
         except TimeoutError:
             logger.error("Đợi sdk_session_id quá hạn temp_id=%s", temp_id)
+=======
+            await asyncio.wait_for(managed.sdk_id_event.wait(), timeout=10.0)
+        except TimeoutError:
+            logger.error("等待 sdk_session_id 超时 temp_id=%s", temp_id)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             managed.cancel_pending_questions("session creation timed out")
             if managed.consumer_task and not managed.consumer_task.done():
                 managed.consumer_task.cancel()
@@ -983,7 +1137,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         try:
             await managed.client.query(prompt)
         except Exception:
+<<<<<<< HEAD
             logger.exception("Xử lý tin nhắn phiên thất bại")
+=======
+            logger.exception("会话消息处理失败")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             managed.pending_user_echoes.clear()
             managed.status = "error"
             await self.meta_store.update_status(session_id, "error")
@@ -1045,11 +1203,19 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 await self._finalize_turn(managed, msg_dict)
 
         except asyncio.CancelledError:
+<<<<<<< HEAD
             await self._mark_session_terminal(managed, "interrupted", "phiên làm việc bị ngắt quãng")
             raise
         except Exception:
             logger.exception("Ngoại lệ vòng lặp tiêu thụ tin nhắn phiên")
             await self._mark_session_terminal(managed, "error", "lỗi phiên làm việc")
+=======
+            await self._mark_session_terminal(managed, "interrupted", "session interrupted")
+            raise
+        except Exception:
+            logger.exception("会话消费循环异常")
+            await self._mark_session_terminal(managed, "error", "session error")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             raise
 
     def _handle_special_message(self, managed: ManagedSession, msg_dict: dict[str, Any]) -> None:
@@ -1122,7 +1288,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         self._schedule_cleanup(managed.session_id)
 
     def _schedule_cleanup(self, session_id: str) -> None:
+<<<<<<< HEAD
         """Lập lịch dọn dẹp trễ cho các phiên không ở trạng thái running, thời gian trễ được lấy từ cấu hình."""
+=======
+        """为非 running 会话调度延迟清理，延迟从配置读取。"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         managed = self.sessions.get(session_id)
         if managed is None:
             return
@@ -1139,13 +1309,21 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             # 会话已恢复活跃 → 跳过
             if m.status == "running":
                 return
+<<<<<<< HEAD
             logger.info("Đang dọn dẹp phiên session_id=%s status=%s", session_id, m.status)
+=======
+            logger.info("清理会话 session_id=%s status=%s", session_id, m.status)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             # 清除自身引用，避免 _disconnect_session 尝试 cancel/gather 当前任务
             m._cleanup_task = None
             try:
                 await self._disconnect_session(session_id, reason="cleanup timer")
             except Exception:
+<<<<<<< HEAD
                 logger.warning("Dọn dẹp phiên thất bại session_id=%s", session_id, exc_info=True)
+=======
+                logger.warning("清理会话失败 session_id=%s", session_id, exc_info=True)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
         managed._cleanup_task = asyncio.create_task(_do_cleanup())
 
@@ -1190,7 +1368,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         except TimeoutError:
             return False
         except Exception:
+<<<<<<< HEAD
             logger.warning("Đợi tiến trình Claude con thoát thất bại", exc_info=True)
+=======
+            logger.warning("等待 Claude 子进程退出失败", exc_info=True)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             return False
         return self._process_returncode(process) is not None
 
@@ -1205,7 +1387,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         """Force terminate lingering Claude CLI process."""
         if process is None:
             logger.error(
+<<<<<<< HEAD
                 "Ngắt kết nối phiên thất bại và không thể truy cập tiến trình gốc session_id=%s cause=%s",
+=======
+                "会话断开失败且无法访问底层进程 session_id=%s cause=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 session_id,
                 cause,
             )
@@ -1215,7 +1401,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             return True
 
         logger.warning(
+<<<<<<< HEAD
             "Phiên ngắt kết nối bất thường, đang thử cưỡng bức chấm dứt tiến trình Claude con session_id=%s pid=%s cause=%s",
+=======
+            "会话断开异常，尝试强制终止 Claude 子进程 session_id=%s pid=%s cause=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             session_id,
             pid,
             cause,
@@ -1226,7 +1416,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             return True
         except Exception:
             logger.warning(
+<<<<<<< HEAD
                 "Gửi tín hiệu SIGTERM thất bại session_id=%s pid=%s",
+=======
+                "发送 SIGTERM 失败 session_id=%s pid=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 session_id,
                 pid,
                 exc_info=True,
@@ -1234,7 +1428,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         else:
             if await self._wait_for_process_exit(process, timeout=self._TERMINATE_WAIT_TIMEOUT):
                 logger.warning(
+<<<<<<< HEAD
                     "Tiến trình Claude con đã thoát qua SIGTERM session_id=%s pid=%s returncode=%s",
+=======
+                    "Claude 子进程已通过 SIGTERM 退出 session_id=%s pid=%s returncode=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     session_id,
                     pid,
                     self._process_returncode(process),
@@ -1242,7 +1440,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 return True
 
         logger.error(
+<<<<<<< HEAD
             "Tiến trình Claude con vẫn tồn tại sau SIGTERM, đang gửi SIGKILL session_id=%s pid=%s",
+=======
+            "Claude 子进程在 SIGTERM 后仍存活，发送 SIGKILL session_id=%s pid=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             session_id,
             pid,
         )
@@ -1252,7 +1454,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             return True
         except Exception:
             logger.error(
+<<<<<<< HEAD
                 "Gửi tín hiệu SIGKILL thất bại session_id=%s pid=%s",
+=======
+                "发送 SIGKILL 失败 session_id=%s pid=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 session_id,
                 pid,
                 exc_info=True,
@@ -1261,7 +1467,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
 
         if await self._wait_for_process_exit(process, timeout=self._KILL_WAIT_TIMEOUT):
             logger.warning(
+<<<<<<< HEAD
                 "Tiến trình Claude con đã thoát qua SIGKILL session_id=%s pid=%s returncode=%s",
+=======
+                "Claude 子进程已通过 SIGKILL 退出 session_id=%s pid=%s returncode=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 session_id,
                 pid,
                 self._process_returncode(process),
@@ -1269,7 +1479,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             return True
 
         logger.error(
+<<<<<<< HEAD
             "Tiến trình Claude con vẫn chưa thoát sau SIGKILL session_id=%s pid=%s",
+=======
+            "Claude 子进程在 SIGKILL 后仍未退出 session_id=%s pid=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             session_id,
             pid,
         )
@@ -1290,7 +1504,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         reason: str = "session closed",
         interrupt_running: bool = False,
     ) -> None:
+<<<<<<< HEAD
         """Ngắt kết nối phiên an toàn, xác nhận tiến trình con đã thoát trước khi giải phóng slot."""
+=======
+        """安全断开会话，确认子进程退出后再释放槽位。"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         if session_id in self._disconnecting:
             return
         managed = self.sessions.get(session_id)
@@ -1327,16 +1545,26 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                     timeout=self._INTERRUPT_TIMEOUT,
                 )
             except TimeoutError:
+<<<<<<< HEAD
                 logger.warning("Ngắt phiên quá hạn session_id=%s", session_id)
             except Exception:
                 logger.warning("Ngắt phiên thất bại session_id=%s", session_id, exc_info=True)
+=======
+                logger.warning("中断会话超时 session_id=%s", session_id)
+            except Exception:
+                logger.warning("中断会话失败 session_id=%s", session_id, exc_info=True)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
             managed.status = "interrupted"
             try:
                 await self.meta_store.update_status(session_id, "interrupted")
             except Exception:
                 logger.warning(
+<<<<<<< HEAD
                     "Cập nhật trạng thái ngắt phiên thất bại session_id=%s",
+=======
+                    "更新会话中断状态失败 session_id=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     session_id,
                     exc_info=True,
                 )
@@ -1347,7 +1575,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         process = self._get_client_process(managed.client)
         pid = self._process_pid(process)
         logger.info(
+<<<<<<< HEAD
             "Bắt đầu ngắt kết nối phiên session_id=%s status=%s pid=%s reason=%s",
+=======
+            "开始断开会话 session_id=%s status=%s pid=%s reason=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             session_id,
             managed.status,
             pid,
@@ -1370,13 +1602,21 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             closed = process is None or self._process_returncode(process) is not None
             if not closed:
                 logger.warning(
+<<<<<<< HEAD
                     "Tiến trình Claude con vẫn tồn tại sau khi gọi disconnect session_id=%s pid=%s",
+=======
+                    "disconnect 返回后 Claude 子进程仍存活 session_id=%s pid=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     session_id,
                     pid,
                 )
         else:
             logger.warning(
+<<<<<<< HEAD
                 "Ngắt kết nối phiên êm đẹp thất bại session_id=%s pid=%s reason=%s error=%s",
+=======
+                "优雅断开会话失败 session_id=%s pid=%s reason=%s error=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 session_id,
                 pid,
                 reason,
@@ -1400,7 +1640,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         self.sessions.pop(session_id, None)
         self._connect_locks.pop(session_id, None)
         logger.info(
+<<<<<<< HEAD
             "Phiên làm việc đã ngắt kết nối session_id=%s pid=%s returncode=%s",
+=======
+            "会话已断开 session_id=%s pid=%s returncode=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             session_id,
             pid,
             self._process_returncode(process),
@@ -1414,7 +1658,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 val = await svc.get_setting("agent_session_cleanup_delay_seconds", "300")
             return max(int(val), 10)
         except Exception:
+<<<<<<< HEAD
             logger.warning("Đọc cấu hình cleanup delay thất bại, đang sử dụng giá trị mặc định", exc_info=True)
+=======
+            logger.warning("读取 cleanup delay 配置失败，使用默认值", exc_info=True)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             return 300
 
     async def _get_max_concurrent(self) -> int:
@@ -1425,11 +1673,19 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 val = await svc.get_setting("agent_max_concurrent_sessions", "5")
             return max(int(val), 1)
         except Exception:
+<<<<<<< HEAD
             logger.warning("Đọc cấu hình max_concurrent thất bại, đang sử dụng giá trị mặc định", exc_info=True)
             return 5
 
     async def _ensure_capacity(self) -> None:
         """Đảm bảo có slot đồng thời trống, nếu cần sẽ loại bỏ phiên ít hoạt động nhất không ở trạng thái running."""
+=======
+            logger.warning("读取 max_concurrent 配置失败，使用默认值", exc_info=True)
+            return 5
+
+    async def _ensure_capacity(self) -> None:
+        """确保有空余并发槽位，必要时淘汰最久未活跃的非 running 会话。"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         max_concurrent = await self._get_max_concurrent()
         active = [s for s in self.sessions.values() if s.client is not None and s.session_id not in self._disconnecting]
 
@@ -1445,7 +1701,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         if evictable:
             victim = evictable[0]
             logger.info(
+<<<<<<< HEAD
                 "Đạt giới hạn đồng thời, đang loại bỏ session_id=%s (status=%s)",
+=======
+                "并发上限，淘汰 session_id=%s (status=%s)",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 victim.session_id,
                 victim.status,
             )
@@ -1456,6 +1716,7 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 )
             except Exception as exc:
                 logger.error(
+<<<<<<< HEAD
                     "Loại bỏ phiên thất bại, không thể giải phóng slot đồng thời session_id=%s",
                     victim.session_id,
                     exc_info=True,
@@ -1470,6 +1731,22 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
 
     async def _patrol_once(self) -> None:
         """Tuần tra một lần: Dọn dẹp tất cả các phiên quá hạn không ở trạng thái running."""
+=======
+                    "淘汰会话失败，无法释放并发槽位 session_id=%s",
+                    victim.session_id,
+                    exc_info=True,
+                )
+                raise SessionCapacityError("存在未能关闭的空闲会话，当前无法释放并发槽位，请稍后重试") from exc
+            return
+
+        # 所有会话都在 running → 拒绝
+        raise SessionCapacityError(f"当前有{len(active)}个正在进行的会话，已达到最大上限，请稍后重试")
+
+    _PATROL_INTERVAL = 300  # 5 分钟
+
+    async def _patrol_once(self) -> None:
+        """单次巡检：清理所有超时的非 running 会话。"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         cleanup_delay = await self._get_cleanup_delay()
         now = time.monotonic()
         for sid, managed in list(self.sessions.items()):
@@ -1477,27 +1754,46 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 continue
             activity_age = now - (managed.last_activity or 0)
             if activity_age > cleanup_delay * 2:
+<<<<<<< HEAD
                 logger.info("Tuần tra dọn dẹp định kỳ phiên session_id=%s status=%s", sid, managed.status)
+=======
+                logger.info("巡检兜底清理会话 session_id=%s status=%s", sid, managed.status)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 try:
                     await self._disconnect_session(sid, reason="patrol cleanup")
                 except Exception:
                     logger.warning(
+<<<<<<< HEAD
                         "Tuần tra dọn dẹp định kỳ thất bại session_id=%s",
+=======
+                        "巡检兜底清理失败 session_id=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                         sid,
                         exc_info=True,
                     )
 
     async def _patrol_loop(self) -> None:
+<<<<<<< HEAD
         """Vòng lặp tuần tra định kỳ chạy nền."""
+=======
+        """后台定期巡检循环。"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         while True:
             await asyncio.sleep(self._PATROL_INTERVAL)
             try:
                 await self._patrol_once()
             except Exception:
+<<<<<<< HEAD
                 logger.warning("Ngoại lệ vòng lặp tuần tra", exc_info=True)
 
     def start_patrol(self) -> None:
         """Bắt đầu nhiệm vụ tuần tra chạy nền (nên được gọi khi ứng dụng khởi động - startup)."""
+=======
+                logger.warning("巡检循环异常", exc_info=True)
+
+    def start_patrol(self) -> None:
+        """启动巡检后台任务（应在应用 startup 时调用）。"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         self._patrol_task = asyncio.create_task(self._patrol_loop())
 
     @staticmethod
@@ -1547,6 +1843,7 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         except (ValueError, OSError):
             return False
 
+<<<<<<< HEAD
         # Use Case-Insensitive comparison for Windows drive letters
         try:
             # Check if resolved is relative to project_cwd
@@ -1565,6 +1862,11 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                 return True
         except (ValueError, OSError):
             pass
+=======
+        # 1. Within project directory — full access (read + write)
+        if resolved.is_relative_to(project_cwd):
+            return True
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
         # 2. Write tools: only project directory allowed
         if tool_name in self._WRITE_TOOLS:
@@ -1682,6 +1984,7 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
             # by allowed_tools or settings.json allow rules.
             if PermissionResultDeny is not None:
                 hint = (
+<<<<<<< HEAD
                     f"Yêu cầu gọi công cụ chưa được ủy quyền: {tool_name}\n"
                     f"Dữ liệu: ({json.dumps(input_data, ensure_ascii=False)[:200]})\n\n"
                     "QUY TẮC BẢO MẬT BASH:\n"
@@ -1689,6 +1992,15 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
                     "2. CẤM dùng 'cd', '&&', đường dẫn tuyệt đối (C:\\...), hoặc dấu xuyệt ngược '\\'.\n"
                     "3. Chỉ sử dụng: 'python .claude/skills/<skill>/scripts/<script>.py <args>'\n\n"
                     "Vui lòng sửa lại lệnh Bash của bạn cho đúng định dạng trên và thử lại."
+=======
+                    f"未授权的工具调用: {tool_name}"
+                    f"({json.dumps(input_data, ensure_ascii=False)[:200]})\n"
+                    "当前 Bash 白名单仅允许以下命令:\n"
+                    "  - python .claude/skills/<skill>/scripts/<script>.py <args>（必须用相对路径）\n"
+                    "  - ffmpeg / ffprobe\n"
+                    "其他 Bash 命令均不可用。"
+                    "请检查命令格式是否匹配白名单规则。"
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 )
                 return PermissionResultDeny(message=hint)
             return PermissionResultAllow(updated_input=input_data)
@@ -1918,11 +2230,19 @@ Bạn là ArcReel Agent, một trợ lý sáng tạo nội dung video AI chuyên
         """Resolve AskUserQuestion answers for a running session."""
         managed = self.sessions.get(session_id)
         if managed is None:
+<<<<<<< HEAD
             raise ValueError("Phiên không hoạt động hoặc không có câu hỏi chờ trả lời")
         if managed.status != "running":
             raise ValueError("Phiên không hoạt động hoặc không có câu hỏi chờ trả lời")
         if not managed.resolve_pending_question(question_id, answers):
             raise ValueError("Không tìm thấy câu hỏi chờ trả lời")
+=======
+            raise ValueError("会话未运行或无待回答问题")
+        if managed.status != "running":
+            raise ValueError("会话未运行或无待回答问题")
+        if not managed.resolve_pending_question(question_id, answers):
+            raise ValueError("未找到待回答的问题")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     async def subscribe(self, session_id: str, replay_buffer: bool = True) -> asyncio.Queue:
         """Subscribe to session messages. Returns queue for SSE."""

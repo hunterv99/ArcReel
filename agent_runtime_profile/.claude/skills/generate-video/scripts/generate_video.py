@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+<<<<<<< HEAD
 Video Generator - Sử dụng Veo 3.1 API tạo video phân cảnh
 
 Usage:
@@ -16,6 +17,24 @@ Usage:
     python generate_video.py episode_N.json --all
 
 Mỗi cảnh tạo video độc lập, sử dụng ảnh phân cảnh làm khung hình bắt đầu, sau đó dùng ffmpeg để ghép lại.
+=======
+Video Generator - 使用 Veo 3.1 API 生成视频分镜
+
+Usage:
+    # 按 episode 生成（推荐）
+    python generate_video.py episode_N.json --episode N
+
+    # 断点续传
+    python generate_video.py episode_N.json --episode N --resume
+
+    # 单场景模式
+    python generate_video.py episode_N.json --scene SCENE_ID
+
+    # 批量模式（独立生成每个场景）
+    python generate_video.py episode_N.json --all
+
+每个场景独立生成视频，使用分镜图作为起始帧，然后使用 ffmpeg 拼接。
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 """
 
 import argparse
@@ -39,12 +58,17 @@ from lib.project_manager import ProjectManager
 from lib.prompt_utils import is_structured_video_prompt, video_prompt_to_yaml
 
 # ============================================================================
+<<<<<<< HEAD
 # Xây dựng Prompt
+=======
+# Prompt 构建
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 # ============================================================================
 
 
 def get_video_prompt(item: dict) -> str:
     """
+<<<<<<< HEAD
     Lấy Prompt tạo video
 
     Hỗ trợ định dạng prompt có cấu trúc: Nếu video_prompt là dict, nó sẽ được chuyển sang định dạng YAML.
@@ -54,10 +78,22 @@ def get_video_prompt(item: dict) -> str:
 
     Returns:
         chuỗi video_prompt (có thể là định dạng YAML hoặc chuỗi thông thường)
+=======
+    获取视频生成 Prompt
+
+    支持结构化 prompt 格式：如果 video_prompt 是 dict，则转换为 YAML 格式。
+
+    Args:
+        item: 片段/场景字典
+
+    Returns:
+        video_prompt 字符串（可能是 YAML 格式或普通字符串）
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     prompt = item.get("video_prompt")
     if not prompt:
         item_id = item.get("segment_id") or item.get("scene_id")
+<<<<<<< HEAD
         raise ValueError(f"Đoạn/Cảnh thiếu trường video_prompt: {item_id}")
 
     # Kiểm tra xem có phải định dạng có cấu trúc không
@@ -73,12 +109,30 @@ def get_video_prompt(item: dict) -> str:
     if not isinstance(prompt, str):
         item_id = item.get("segment_id") or item.get("scene_id")
         raise TypeError(f"Loại video_prompt của đoạn/cảnh không hợp lệ (mong đợi str hoặc dict): {item_id}")
+=======
+        raise ValueError(f"片段/场景缺少 video_prompt 字段: {item_id}")
+
+    # 检测是否为结构化格式
+    if is_structured_video_prompt(prompt):
+        # 转换为 YAML 格式
+        return video_prompt_to_yaml(prompt)
+
+    # 避免将 dict 直接下传导致类型错误
+    if isinstance(prompt, dict):
+        item_id = item.get("segment_id") or item.get("scene_id")
+        raise ValueError(f"片段/场景 video_prompt 为对象但格式不符合结构化规范: {item_id}")
+
+    if not isinstance(prompt, str):
+        item_id = item.get("segment_id") or item.get("scene_id")
+        raise TypeError(f"片段/场景 video_prompt 类型无效（期望 str 或 dict）: {item_id}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     return prompt
 
 
 def get_items_from_script(script: dict) -> tuple:
     """
+<<<<<<< HEAD
     Lấy danh sách cảnh/đoạn và các trường liên quan dựa trên chế độ nội dung
 
     Args:
@@ -86,6 +140,15 @@ def get_items_from_script(script: dict) -> tuple:
 
     Returns:
         Tuple (items_list, id_field, char_field, clue_field)
+=======
+    根据内容模式获取场景/片段列表和相关字段名
+
+    Args:
+        script: 剧本数据
+
+    Returns:
+        (items_list, id_field, char_field, clue_field) 元组
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     content_mode = script.get("content_mode", "narration")
     if content_mode == "narration" and "segments" in script:
@@ -94,12 +157,17 @@ def get_items_from_script(script: dict) -> tuple:
 
 
 def parse_scene_ids(scenes_arg: str) -> list:
+<<<<<<< HEAD
     """Parse danh sách ID cảnh được phân tách bằng dấu phẩy"""
+=======
+    """解析逗号分隔的场景 ID 列表"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     return [s.strip() for s in scenes_arg.split(",") if s.strip()]
 
 
 def validate_duration(duration: int) -> str:
     """
+<<<<<<< HEAD
     Xác thực và trả về tham số thời lượng hợp lệ
 
     Veo API chỉ hỗ trợ 4s/6s/8s
@@ -109,10 +177,22 @@ def validate_duration(duration: int) -> str:
 
     Returns:
         Chuỗi thời lượng hợp lệ
+=======
+    验证并返回有效的时长参数
+
+    Veo API 仅支持 4s/6s/8s
+
+    Args:
+        duration: 输入的时长（秒）
+
+    Returns:
+        有效的时长字符串
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     valid_durations = [4, 6, 8]
     if duration in valid_durations:
         return str(duration)
+<<<<<<< HEAD
     # Làm tròn lên giá trị hợp lệ gần nhất
     for d in valid_durations:
         if d >= duration:
@@ -122,20 +202,42 @@ def validate_duration(duration: int) -> str:
 
 # ============================================================================
 # Quản lý Checkpoint
+=======
+    # 向上取整到最近的有效值
+    for d in valid_durations:
+        if d >= duration:
+            return str(d)
+    return "8"  # 最大值
+
+
+# ============================================================================
+# Checkpoint 管理
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 # ============================================================================
 
 
 def get_checkpoint_path(project_dir: Path, episode: int) -> Path:
+<<<<<<< HEAD
     """Lấy đường dẫn tệp checkpoint"""
+=======
+    """获取 checkpoint 文件路径"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     return project_dir / "videos" / f".checkpoint_ep{episode}.json"
 
 
 def load_checkpoint(project_dir: Path, episode: int) -> dict | None:
     """
+<<<<<<< HEAD
     Tải checkpoint
 
     Returns:
         dict checkpoint hoặc None
+=======
+    加载 checkpoint
+
+    Returns:
+        checkpoint 字典或 None
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     checkpoint_path = get_checkpoint_path(project_dir, episode)
     if checkpoint_path.exists():
@@ -145,7 +247,11 @@ def load_checkpoint(project_dir: Path, episode: int) -> dict | None:
 
 
 def save_checkpoint(project_dir: Path, episode: int, completed_scenes: list, started_at: str):
+<<<<<<< HEAD
     """Lưu checkpoint"""
+=======
+    """保存 checkpoint"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     checkpoint_path = get_checkpoint_path(project_dir, episode)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -161,19 +267,28 @@ def save_checkpoint(project_dir: Path, episode: int, completed_scenes: list, sta
 
 
 def clear_checkpoint(project_dir: Path, episode: int):
+<<<<<<< HEAD
     """Xóa checkpoint"""
+=======
+    """清除 checkpoint"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     checkpoint_path = get_checkpoint_path(project_dir, episode)
     if checkpoint_path.exists():
         checkpoint_path.unlink()
 
 
 # ============================================================================
+<<<<<<< HEAD
 # Ghép video bằng FFmpeg
+=======
+# FFmpeg 拼接
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 # ============================================================================
 
 
 def concatenate_videos(video_paths: list, output_path: Path) -> Path:
     """
+<<<<<<< HEAD
     Sử dụng ffmpeg để ghép nhiều đoạn video
 
     Args:
@@ -185,31 +300,60 @@ def concatenate_videos(video_paths: list, output_path: Path) -> Path:
     """
     if len(video_paths) == 1:
         # Chỉ có một đoạn, sao chép trực tiếp
+=======
+    使用 ffmpeg 拼接多个视频片段
+
+    Args:
+        video_paths: 视频文件路径列表
+        output_path: 输出路径
+
+    Returns:
+        输出视频路径
+    """
+    if len(video_paths) == 1:
+        # 只有一个片段，直接复制
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         import shutil
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(video_paths[0], output_path)
         return output_path
 
+<<<<<<< HEAD
     # Tạo danh sách tệp tạm thời
+=======
+    # 创建临时文件列表
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         for video_path in video_paths:
             f.write(f"file '{video_path}'\n")
         list_file = f.name
 
     try:
+<<<<<<< HEAD
         # Sử dụng ffmpeg concat demuxer
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", str(output_path)]
         subprocess.run(cmd, check=True, capture_output=True)
         print(f"✅ Video đã được ghép: {output_path}")
+=======
+        # 使用 ffmpeg concat demuxer
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", str(output_path)]
+        subprocess.run(cmd, check=True, capture_output=True)
+        print(f"✅ 视频已拼接: {output_path}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         return output_path
     finally:
         Path(list_file).unlink()
 
 
 # ============================================================================
+<<<<<<< HEAD
 # Hàm hỗ trợ tạo nhiệm vụ hàng loạt
+=======
+# 批量任务构建辅助
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 # ============================================================================
 
 
@@ -225,12 +369,21 @@ def _build_video_specs(
     """
     从场景/片段列表构建 BatchTaskSpec 和 resource_id -> order_index 映射。
 
+<<<<<<< HEAD
     Bỏ qua các mục thiếu ảnh phân cảnh hoặc prompt không hợp lệ, và in cảnh báo.
 
     Returns:
         (specs, order_map)  order_map: resource_id -> vị trí trong items gốc
     """
     item_type = "Đoạn" if content_mode == "narration" else "Cảnh"
+=======
+    跳过缺少分镜图或 prompt 无效的项，并打印警告。
+
+    Returns:
+        (specs, order_map)  order_map: resource_id -> 原始 items 中的索引
+    """
+    item_type = "片段" if content_mode == "narration" else "场景"
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     default_duration = 4 if content_mode == "narration" else 8
     skip_set = set(skip_ids or [])
 
@@ -245,17 +398,29 @@ def _build_video_specs(
 
         storyboard_image = (item.get("generated_assets") or {}).get("storyboard_image")
         if not storyboard_image:
+<<<<<<< HEAD
             print(f"⚠️  {item_type} {item_id} không có ảnh phân cảnh, bỏ qua")
             continue
         storyboard_path = project_dir / storyboard_image
         if not storyboard_path.exists():
             print(f"⚠️  Ảnh phân cảnh không tồn tại: {storyboard_path}, bỏ qua")
+=======
+            print(f"⚠️  {item_type} {item_id} 没有分镜图，跳过")
+            continue
+        storyboard_path = project_dir / storyboard_image
+        if not storyboard_path.exists():
+            print(f"⚠️  分镜图不存在: {storyboard_path}，跳过")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             continue
 
         try:
             prompt = get_video_prompt(item)
         except Exception as e:
+<<<<<<< HEAD
             print(f"⚠️  video_prompt của {item_type} {item_id} không hợp lệ, bỏ qua: {e}")
+=======
+            print(f"⚠️  {item_type} {item_id} 的 video_prompt 无效，跳过: {e}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             continue
 
         duration = item.get("duration_seconds", default_duration)
@@ -313,7 +478,11 @@ def _submit_and_wait_with_checkpoint(
     item_type: str,
 ) -> list[BatchTaskResult]:
     """Submit specs via batch_enqueue_and_wait_sync with checkpoint on each success."""
+<<<<<<< HEAD
     print(f"\n🚀 Nộp hàng loạt {len(specs)} yêu cầu tạo video vào hàng đợi...\n")
+=======
+    print(f"\n🚀 批量提交 {len(specs)} 个视频到生成队列...\n")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     def on_success(br: BatchTaskResult) -> None:
         result = br.result or {}
@@ -322,10 +491,17 @@ def _submit_and_wait_with_checkpoint(
         ordered_paths[order_map[br.resource_id]] = output_path
         completed_scenes.append(br.resource_id)
         save_fn()
+<<<<<<< HEAD
         print(f"    ✅ Hoàn tất: {output_path.name}")
 
     def on_failure(br: BatchTaskResult) -> None:
         print(f"    ❌ {br.resource_id} thất bại: {br.error}")
+=======
+        print(f"    ✅ 完成: {output_path.name}")
+
+    def on_failure(br: BatchTaskResult) -> None:
+        print(f"    ❌ {br.resource_id} 失败: {br.error}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     _, failures = batch_enqueue_and_wait_sync(
         project_name=project_name,
@@ -335,17 +511,29 @@ def _submit_and_wait_with_checkpoint(
     )
 
     if failures:
+<<<<<<< HEAD
         print(f"\n⚠️  {len(failures)} {item_type} tạo thất bại:")
         for f in failures:
             print(f"   - {f.resource_id}: {f.error}")
         print("    💡 Sử dụng cờ --resume để tiếp tục từ điểm này")
         raise RuntimeError(f"{len(failures)} {item_type} tạo thất bại")
+=======
+        print(f"\n⚠️  {len(failures)} 个{item_type}生成失败:")
+        for f in failures:
+            print(f"   - {f.resource_id}: {f.error}")
+        print("    💡 使用 --resume 参数可从此处继续")
+        raise RuntimeError(f"{len(failures)} 个{item_type}生成失败")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     return failures
 
 
 # ============================================================================
+<<<<<<< HEAD
 # Tạo video theo Episode (Tạo độc lập từng cảnh)
+=======
+# Episode 视频生成（每个场景独立生成）
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 # ============================================================================
 
 
@@ -355,9 +543,15 @@ def generate_episode_video(
     resume: bool = False,
 ) -> list[Path]:
     """
+<<<<<<< HEAD
     Tạo tệp video cho tất cả cảnh trong tập được chỉ định.
 
     Mỗi cảnh tạo video độc lập, sử dụng ảnh phân cảnh làm khung hình bắt đầu.
+=======
+    为指定 episode 生成所有场景的视频片段。
+
+    每个场景独立生成视频，使用分镜图作为起始帧。
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     pm, project_name = ProjectManager.from_cwd()
     project_dir = pm.get_project_path(project_name)
@@ -367,10 +561,17 @@ def generate_episode_video(
 
     episode_items = [s for s in all_items if s.get("episode", 1) == episode]
     if not episode_items:
+<<<<<<< HEAD
         raise ValueError(f"Không tìm thấy cảnh/đoạn cho tập {episode}")
 
     item_type = "Đoạn" if content_mode == "narration" else "Cảnh"
     print(f"📋 Tập {episode} có tổng cộng {len(episode_items)} {item_type}")
+=======
+        raise ValueError(f"未找到第 {episode} 集的场景/片段")
+
+    item_type = "片段" if content_mode == "narration" else "场景"
+    print(f"📋 第 {episode} 集共 {len(episode_items)} 个{item_type}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     # Checkpoint
     completed_scenes: list[str] = []
@@ -380,9 +581,15 @@ def generate_episode_video(
         if checkpoint:
             completed_scenes = checkpoint.get("completed_scenes", [])
             started_at = checkpoint.get("started_at", started_at)
+<<<<<<< HEAD
             print(f"🔄 Khôi phục từ checkpoint, đã hoàn thành {len(completed_scenes)} cảnh")
         else:
             print("⚠️  Không tìm thấy checkpoint, tạo lại từ đầu")
+=======
+            print(f"🔄 从 checkpoint 恢复，已完成 {len(completed_scenes)} 个场景")
+        else:
+            print("⚠️  未找到 checkpoint，从头开始")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     videos_dir = project_dir / "videos"
     videos_dir.mkdir(parents=True, exist_ok=True)
@@ -404,7 +611,11 @@ def generate_episode_video(
     )
 
     if not specs and not any(ordered_video_paths):
+<<<<<<< HEAD
         raise RuntimeError("Không có đoạn video nào để tạo")
+=======
+        raise RuntimeError("没有可生成的视频片段")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     if specs:
         _submit_and_wait_with_checkpoint(
@@ -420,20 +631,32 @@ def generate_episode_video(
 
     scene_videos = [p for p in ordered_video_paths if p is not None]
     if not scene_videos:
+<<<<<<< HEAD
         raise RuntimeError("Không có đoạn video nào được tạo")
 
     clear_checkpoint(project_dir, episode)
     print(f"\n🎉 Tạo video tập {episode} hoàn tất, tổng cộng {len(scene_videos)} đoạn")
+=======
+        raise RuntimeError("没有生成任何视频片段")
+
+    clear_checkpoint(project_dir, episode)
+    print(f"\n🎉 第 {episode} 集视频生成完成，共 {len(scene_videos)} 个片段")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     return scene_videos
 
 
 # ============================================================================
+<<<<<<< HEAD
 # Tạo một cảnh
+=======
+# 单场景生成
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 # ============================================================================
 
 
 def generate_scene_video(script_filename: str, scene_id: str) -> Path:
     """
+<<<<<<< HEAD
     Tạo video cho một cảnh/đoạn
 
     Args:
@@ -442,16 +665,34 @@ def generate_scene_video(script_filename: str, scene_id: str) -> Path:
 
     Returns:
         Đường dẫn video được tạo
+=======
+    生成单个场景/片段的视频
+
+    Args:
+        script_filename: 剧本文件名
+        scene_id: 场景/片段 ID
+
+    Returns:
+        生成的视频路径
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     pm, project_name = ProjectManager.from_cwd()
     project_dir = pm.get_project_path(project_name)
 
+<<<<<<< HEAD
     # Tải kịch bản
+=======
+    # 加载剧本
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     script = pm.load_script(project_name, script_filename)
     content_mode = script.get("content_mode", "narration")
     all_items, id_field, _, _ = get_items_from_script(script)
 
+<<<<<<< HEAD
     # Tìm cảnh/đoạn được chỉ định
+=======
+    # 找到指定场景/片段
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     item = None
     for s in all_items:
         if s.get(id_field) == scene_id or s.get("scene_id") == scene_id:
@@ -459,6 +700,7 @@ def generate_scene_video(script_filename: str, scene_id: str) -> Path:
             break
 
     if not item:
+<<<<<<< HEAD
         raise ValueError(f"Cảnh/Đoạn '{scene_id}' không tồn tại")
 
     # Kiểm tra ảnh phân cảnh
@@ -474,12 +716,34 @@ def generate_scene_video(script_filename: str, scene_id: str) -> Path:
     prompt = get_video_prompt(item)
 
     # Lấy thời lượng (Chế độ kể chuyện mặc định 4s, hoạt hình nhiều tập mặc định 8s)
+=======
+        raise ValueError(f"场景/片段 '{scene_id}' 不存在")
+
+    # 检查分镜图
+    storyboard_image = item.get("generated_assets", {}).get("storyboard_image")
+    if not storyboard_image:
+        raise ValueError(f"场景/片段 '{scene_id}' 没有分镜图，请先运行 generate-storyboard")
+
+    storyboard_path = project_dir / storyboard_image
+    if not storyboard_path.exists():
+        raise FileNotFoundError(f"分镜图不存在: {storyboard_path}")
+
+    # 直接使用 video_prompt 字段
+    prompt = get_video_prompt(item)
+
+    # 获取时长（说书模式默认 4 秒，剧集动画默认 8 秒）
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     default_duration = 4 if content_mode == "narration" else 8
     duration = item.get("duration_seconds", default_duration)
     duration_str = validate_duration(duration)
 
+<<<<<<< HEAD
     print(f"🎬 Đang tạo video: Cảnh/Đoạn {scene_id}")
     print("   Thời gian đợi dự kiến: 1-6 phút")
+=======
+    print(f"🎬 正在生成视频: 场景/片段 {scene_id}")
+    print("   预计等待时间: 1-6 分钟")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     queued = enqueue_and_wait(
         project_name=project_name,
@@ -498,21 +762,36 @@ def generate_scene_video(script_filename: str, scene_id: str) -> Path:
     relative_path = result.get("file_path") or f"videos/scene_{scene_id}.mp4"
     output_path = project_dir / relative_path
 
+<<<<<<< HEAD
     print(f"✅ Video đã được lưu: {output_path}")
+=======
+    print(f"✅ 视频已保存: {output_path}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     return output_path
 
 
 def generate_all_videos(script_filename: str) -> list:
     """
+<<<<<<< HEAD
     Tạo video cho tất cả các cảnh đang chờ xử lý (Chế độ độc lập)
 
     Returns:
         Danh sách đường dẫn video được tạo
+=======
+    生成所有待处理场景的视频（独立模式）
+
+    Returns:
+        生成的视频路径列表
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     pm, project_name = ProjectManager.from_cwd()
     project_dir = pm.get_project_path(project_name)
 
+<<<<<<< HEAD
     # Tải kịch bản
+=======
+    # 加载剧本
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     script = pm.load_script(project_name, script_filename)
     content_mode = script.get("content_mode", "narration")
     all_items, id_field, _, _ = get_items_from_script(script)
@@ -520,6 +799,7 @@ def generate_all_videos(script_filename: str) -> list:
     pending_items = [item for item in all_items if not (item.get("generated_assets") or {}).get("video_clip")]
 
     if not pending_items:
+<<<<<<< HEAD
         print("✨ Video cho tất cả cảnh/đoạn đều đã được tạo")
         return []
 
@@ -527,6 +807,15 @@ def generate_all_videos(script_filename: str) -> list:
     print(f"📋 Tổng cộng {len(pending_items)} {item_type} chờ tạo video")
     print("⚠️  Mỗi video có thể cần 1-6 phút, vui lòng kiên nhẫn chờ")
     print("💡 Khuyến nghị dùng chế độ --episode N để tự động ghép")
+=======
+        print("✨ 所有场景/片段的视频都已生成")
+        return []
+
+    item_type = "片段" if content_mode == "narration" else "场景"
+    print(f"📋 共 {len(pending_items)} 个{item_type}待生成视频")
+    print("⚠️  每个视频可能需要 1-6 分钟，请耐心等待")
+    print("💡 推荐使用 --episode N 模式生成并自动拼接")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     specs, _ = _build_video_specs(
         items=pending_items,
@@ -537,10 +826,17 @@ def generate_all_videos(script_filename: str) -> list:
     )
 
     if not specs:
+<<<<<<< HEAD
         print("⚠️  Không có chức năng tạo nhiệm vụ video nào (chắc là thiếu ảnh phân cảnh hoặc prompt)")
         return []
 
     print(f"\n🚀 Nộp hàng loạt {len(specs)} video vào hàng đợi...\n")
+=======
+        print("⚠️  没有任何可生成的视频任务（可能缺少分镜图或 prompt）")
+        return []
+
+    print(f"\n🚀 批量提交 {len(specs)} 个视频到生成队列...\n")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     result_paths: list[Path] = []
 
@@ -549,10 +845,17 @@ def generate_all_videos(script_filename: str) -> list:
         relative_path = result.get("file_path") or f"videos/scene_{br.resource_id}.mp4"
         output_path = project_dir / relative_path
         result_paths.append(output_path)
+<<<<<<< HEAD
         print(f"✅ Hoàn tất: {output_path.name}")
 
     def on_failure(br: BatchTaskResult) -> None:
         print(f"❌ {br.resource_id} thất bại: {br.error}")
+=======
+        print(f"✅ 完成: {output_path.name}")
+
+    def on_failure(br: BatchTaskResult) -> None:
+        print(f"❌ {br.resource_id} 失败: {br.error}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     _, failures = batch_enqueue_and_wait_sync(
         project_name=project_name,
@@ -562,11 +865,19 @@ def generate_all_videos(script_filename: str) -> list:
     )
 
     if failures:
+<<<<<<< HEAD
         print(f"\n⚠️  {len(failures)} {item_type} tạo thất bại:")
         for f in failures:
             print(f"   - {f.resource_id}: {f.error}")
 
     print(f"\n🎉 Tạo video hàng loạt hoàn tất, tổng cộng {len(result_paths)} cái")
+=======
+        print(f"\n⚠️  {len(failures)} 个{item_type}生成失败:")
+        for f in failures:
+            print(f"   - {f.resource_id}: {f.error}")
+
+    print(f"\n🎉 批量视频生成完成，共 {len(result_paths)} 个")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     return result_paths
 
 
@@ -576,6 +887,7 @@ def generate_selected_videos(
     resume: bool = False,
 ) -> list:
     """
+<<<<<<< HEAD
     Tạo nhiều video được chỉ định
 
     Args:
@@ -585,6 +897,17 @@ def generate_selected_videos(
 
     Returns:
         Danh sách đường dẫn video được tạo
+=======
+    生成指定的多个场景视频
+
+    Args:
+        script_filename: 剧本文件名
+        scene_ids: 场景 ID 列表
+        resume: 是否从断点续传
+
+    Returns:
+        生成的视频路径列表
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     """
     import hashlib
 
@@ -594,7 +917,11 @@ def generate_selected_videos(
     content_mode = script.get("content_mode", "narration")
     all_items, id_field, _, _ = get_items_from_script(script)
 
+<<<<<<< HEAD
     # Lọc các cảnh được chỉ định
+=======
+    # 筛选指定的场景
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     items_by_id = {}
     for item in all_items:
         items_by_id[item.get(id_field, "")] = item
@@ -606,6 +933,7 @@ def generate_selected_videos(
         if scene_id in items_by_id:
             selected_items.append(items_by_id[scene_id])
         else:
+<<<<<<< HEAD
             print(f"⚠️  Cảnh/Đoạn '{scene_id}' không tồn tại, bỏ qua")
 
     if not selected_items:
@@ -613,6 +941,15 @@ def generate_selected_videos(
 
     item_type = "Đoạn" if content_mode == "narration" else "Cảnh"
     print(f"📋 Tổng cộng đã chọn {len(selected_items)} {item_type}")
+=======
+            print(f"⚠️  场景/片段 '{scene_id}' 不存在，跳过")
+
+    if not selected_items:
+        raise ValueError("没有找到任何有效的场景/片段")
+
+    item_type = "片段" if content_mode == "narration" else "场景"
+    print(f"📋 共选择 {len(selected_items)} 个{item_type}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     # Checkpoint
     scenes_hash = hashlib.md5(",".join(scene_ids).encode()).hexdigest()[:8]
@@ -625,7 +962,11 @@ def generate_selected_videos(
             checkpoint = json.load(f)
             completed_scenes = checkpoint.get("completed_scenes", [])
             started_at = checkpoint.get("started_at", started_at)
+<<<<<<< HEAD
             print(f"🔄 Khôi phục từ checkpoint, đã hoàn tất {len(completed_scenes)} cảnh")
+=======
+            print(f"🔄 从 checkpoint 恢复，已完成 {len(completed_scenes)} 个场景")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     videos_dir = project_dir / "videos"
     videos_dir.mkdir(parents=True, exist_ok=True)
@@ -676,21 +1017,34 @@ def generate_selected_videos(
 
     final_results = [p for p in ordered_results if p is not None]
 
+<<<<<<< HEAD
     # Xóa checkpoint sau khi hoàn tất tất cả
     if checkpoint_path.exists():
         checkpoint_path.unlink()
 
     print(f"\n🎉 Tạo hàng loạt video hoàn tất, tổng cộng {len(final_results)} cái")
+=======
+    # 全部完成后清除 checkpoint
+    if checkpoint_path.exists():
+        checkpoint_path.unlink()
+
+    print(f"\n🎉 批量视频生成完成，共 {len(final_results)} 个")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     return final_results
 
 
 # ============================================================================
+<<<<<<< HEAD
 # Giao diện dòng lệnh (CLI)
+=======
+# CLI
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 # ============================================================================
 
 
 def main():
     parser = argparse.ArgumentParser(
+<<<<<<< HEAD
         description="Tạo video phân cảnh",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -722,6 +1076,39 @@ Example:
 
     # Các lựa chọn khác
     parser.add_argument("--resume", action="store_true", help="Tiếp tục từ điểm ngắt trước")
+=======
+        description="生成视频分镜",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  # 按 episode 生成（推荐）
+  python generate_video.py episode_1.json --episode 1
+
+  # 断点续传
+  python generate_video.py episode_1.json --episode 1 --resume
+
+  # 单场景模式
+  python generate_video.py episode_1.json --scene E1S1
+
+  # 批量自选模式
+  python generate_video.py episode_1.json --scenes E1S01,E1S05,E1S10
+
+  # 批量模式（独立生成）
+  python generate_video.py episode_1.json --all
+        """,
+    )
+    parser.add_argument("script", help="剧本文件名")
+
+    # 模式选择
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--scene", help="指定场景 ID（单场景模式）")
+    mode_group.add_argument("--scenes", help="指定多个场景 ID（逗号分隔），如: E1S01,E1S05,E1S10")
+    mode_group.add_argument("--all", action="store_true", help="生成所有待处理场景（独立模式）")
+    mode_group.add_argument("--episode", type=int, help="按 episode 生成并拼接（推荐）")
+
+    # 其他选项
+    parser.add_argument("--resume", action="store_true", help="从上次中断处继续")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
     args = parser.parse_args()
 
@@ -744,12 +1131,21 @@ Example:
                 resume=args.resume,
             )
         else:
+<<<<<<< HEAD
             print("Vui lòng chọn chế độ: --scene, --scenes, --all, hoặc --episode")
             print("Sử dụng --help để xem cú pháp")
             sys.exit(1)
 
     except Exception as e:
         print(f"❌ Lỗi: {e}")
+=======
+            print("请指定模式: --scene, --scenes, --all, 或 --episode")
+            print("使用 --help 查看帮助")
+            sys.exit(1)
+
+    except Exception as e:
+        print(f"❌ 错误: {e}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         sys.exit(1)
 
 

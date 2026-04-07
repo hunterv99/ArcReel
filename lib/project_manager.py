@@ -149,9 +149,12 @@ class ProjectManager:
         Returns:
             {"created": int, "repaired": int, "skipped": int, "errors": int}
         """
+<<<<<<< HEAD
         import platform
         import subprocess
 
+=======
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         project_root = self.projects_root.parent
         profile_dir = project_root / "agent_runtime_profile"
 
@@ -165,6 +168,7 @@ class ProjectManager:
         }
 
         stats = {"created": 0, "repaired": 0, "skipped": 0, "errors": 0}
+<<<<<<< HEAD
 
         def _create_link(name: str, link_path: Path, target_abs: Path, target_rel: Path):
             is_windows = platform.system() == "Windows"
@@ -197,10 +201,13 @@ class ProjectManager:
             except OSError as e:
                 logger.warning("无法删除损坏的链接 %s: %s", link_path, e)
 
+=======
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         for name, target_source in SYMLINKS.items():
             if not target_source.exists():
                 continue
             symlink_path = project_dir / name
+<<<<<<< HEAD
             
             # Note: exists() behaves recursively for symlinks/junctions (True if target exists)
             is_broken_link = symlink_path.is_symlink() and not symlink_path.exists()
@@ -221,6 +228,24 @@ class ProjectManager:
                 if _create_link(name, symlink_path, target_source, REL_TARGETS[name]):
                     stats["created"] += 1
                 else:
+=======
+            if symlink_path.is_symlink() and not symlink_path.exists():
+                # 损坏的软连接
+                try:
+                    symlink_path.unlink()
+                    symlink_path.symlink_to(REL_TARGETS[name])
+                    stats["repaired"] += 1
+                except OSError as e:
+                    logger.warning("无法修复项目 %s 的 %s 符号链接: %s", project_dir.name, name, e)
+                    stats["errors"] += 1
+            elif not symlink_path.exists() and not symlink_path.is_symlink():
+                # 缺失
+                try:
+                    symlink_path.symlink_to(REL_TARGETS[name])
+                    stats["created"] += 1
+                except OSError as e:
+                    logger.warning("无法为项目 %s 创建 %s 符号链接: %s", project_dir.name, name, e)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                     stats["errors"] += 1
             else:
                 stats["skipped"] += 1

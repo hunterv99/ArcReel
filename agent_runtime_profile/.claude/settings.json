@@ -17,6 +17,7 @@
     ],
     "allow": [
       "Bash(python .claude/skills/generate-video/scripts/generate_video.py:*)",
+<<<<<<< HEAD
       "Bash(python -u .claude/skills/generate-video/scripts/generate_video.py:*)",
       "Bash(PYTHONIOENCODING=utf-8 python .claude/skills/generate-video/scripts/generate_video.py:*)",
       "Bash(python .claude/skills/generate-storyboard/scripts/generate_storyboard.py:*)",
@@ -46,6 +47,17 @@
       "Bash(python .claude/skills/compose-video/scripts/compose_video.py:*)",
       "Bash(python -u .claude/skills/compose-video/scripts/compose_video.py:*)",
       "Bash(PYTHONIOENCODING=utf-8 python .claude/skills/compose-video/scripts/compose_video.py:*)",
+=======
+      "Bash(python .claude/skills/generate-storyboard/scripts/generate_storyboard.py:*)",
+      "Bash(python .claude/skills/generate-characters/scripts/generate_character.py:*)",
+      "Bash(python .claude/skills/generate-clues/scripts/generate_clue.py:*)",
+      "Bash(python .claude/skills/generate-script/scripts/generate_script.py:*)",
+      "Bash(python .claude/skills/generate-script/scripts/normalize_drama_script.py:*)",
+      "Bash(python .claude/skills/manage-project/scripts/add_characters_clues.py:*)",
+      "Bash(python .claude/skills/manage-project/scripts/peek_split_point.py:*)",
+      "Bash(python .claude/skills/manage-project/scripts/split_episode.py:*)",
+      "Bash(python .claude/skills/compose-video/scripts/compose_video.py:*)",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
       "Bash(ffmpeg:*)",
       "Bash(ffprobe:*)",
       "BashOutput",

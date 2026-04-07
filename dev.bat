@@ -7,7 +7,11 @@ echo.
 
 :: 1. Backend Service
 echo [1/2] Starting Backend on port 1241...
+<<<<<<< HEAD
 start "ArcReel Backend" cmd /k "echo Starting Backend... && uv run python -m uvicorn server.app:app --port 1241 --reload"
+=======
+start "ArcReel Backend" cmd /k "echo Starting Backend... && uv run uvicorn server.app:app --port 1241"
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
 :: 2. Frontend Service
 echo [2/2] Starting Frontend on port 5173...

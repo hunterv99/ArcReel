@@ -21,10 +21,17 @@ frontend/ (React SPA)  →  server/ (FastAPI)  →  lib/ (Thư viện lõi)
 ```bash
 # Backend
 uv run python -m pytest                              # Kiểm thử (-v đơn tệp / -k từ khóa / --cov độ bao phủ)
+<<<<<<< HEAD
 uv run python -m ruff check . && uv run python -m ruff format .          # lint + format
 uv sync                                              # Cài đặt phụ thuộc
 uv run python -m alembic upgrade head                          # Di chuyển cơ sở dữ liệu
 uv run python -m alembic revision --autogenerate -m "desc"     # Tạo file di chuyển
+=======
+uv run ruff check . && uv run ruff format .          # lint + format
+uv sync                                              # Cài đặt phụ thuộc
+uv run alembic upgrade head                          # Di chuyển cơ sở dữ liệu
+uv run alembic revision --autogenerate -m "desc"     # Tạo file di chuyển
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
 # Frontend (cd frontend &&)
 pnpm build       # Build sản xuất (bao gồm typecheck)

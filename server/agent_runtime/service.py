@@ -81,7 +81,11 @@ class AssistantService:
         interrupted_count = await self.meta_store.interrupt_running_sessions()
         if interrupted_count > 0:
             logger.warning(
+<<<<<<< HEAD
                 "Đã ngắt kết nối các phiên làm việc cũ khi khởi động dịch vụ count=%s",
+=======
+                "服务启动时中断遗留运行中会话 count=%s",
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
                 interrupted_count,
             )
 
@@ -103,7 +107,11 @@ class AssistantService:
             sdk_sessions = await asyncio.to_thread(sdk_list_sessions, directory=project_cwd, include_worktrees=False)
             summary_map = {s.session_id: s.summary for s in sdk_sessions}
         except Exception:
+<<<<<<< HEAD
             logger.warning("Truy xuất danh sách phiên từ SDK thất bại, phần tiêu đề sẽ để trống", exc_info=True)
+=======
+            logger.warning("SDK list_sessions failed, titles will be empty", exc_info=True)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             return sessions
 
         return [SessionMeta(**{**s.model_dump(), "title": summary_map.get(s.id, s.title)}) for s in sessions]
@@ -131,7 +139,11 @@ class AssistantService:
             try:
                 await asyncio.to_thread(sdk_delete_session, session_id)
             except Exception:
+<<<<<<< HEAD
                 logger.warning("Gọi sdk delete_session thất bại cho %s", session_id, exc_info=True)
+=======
+                logger.warning("sdk delete_session failed for %s", session_id, exc_info=True)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
         self._snapshot_cache.pop(session_id, None)
         return await self.meta_store.delete(session_id)
@@ -182,7 +194,11 @@ class AssistantService:
         """Prepare prompt components: (text, sdk_prompt_or_none, echo_blocks_or_none)."""
         text = content.strip()
         if not text and not images:
+<<<<<<< HEAD
             raise ValueError("Nội dung tin nhắn không được để trống")
+=======
+            raise ValueError("消息内容不能为空")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
         if images:
             sdk_prompt = self._build_multimodal_prompt(text, images)
@@ -797,6 +813,7 @@ class AssistantService:
 
     # Display metadata for user-facing skills (label + Lucide icon name)
     _SKILL_DISPLAY_META: dict[str, dict[str, str]] = {
+<<<<<<< HEAD
         "manga-workflow": {"label": "Luồng công việc video", "icon": "clapperboard"},
         "generate-script": {"label": "Tạo kịch bản", "icon": "scroll-text"},
         "generate-storyboard": {"label": "Tạo phân cảnh", "icon": "layout-grid"},
@@ -804,6 +821,15 @@ class AssistantService:
         "generate-characters": {"label": "Tạo nhân vật", "icon": "users"},
         "generate-clues": {"label": "Tạo manh mối", "icon": "search"},
         "compose-video": {"label": "Hợp thành video", "icon": "scissors"},
+=======
+        "manga-workflow": {"label": "视频工作流", "icon": "clapperboard"},
+        "generate-script": {"label": "生成剧本", "icon": "scroll-text"},
+        "generate-storyboard": {"label": "生成分镜图", "icon": "layout-grid"},
+        "generate-video": {"label": "生成视频", "icon": "film"},
+        "generate-characters": {"label": "生成角色图", "icon": "users"},
+        "generate-clues": {"label": "生成线索图", "icon": "search"},
+        "compose-video": {"label": "合成视频", "icon": "scissors"},
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     }
 
     def list_available_skills(self, project_name: str | None = None) -> list[dict[str, str]]:

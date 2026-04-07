@@ -1,4 +1,5 @@
 """
+<<<<<<< HEAD
 Lớp trung gian MediaGenerator
 
 Gói gọn GeminiClient + VersionManager, cung cấp quản lý phiên bản mà phía gọi không cần biết chi tiết.
@@ -9,6 +10,18 @@ Hỗ trợ 4 loại tài nguyên:
 - videos: Video (scene_E1S01.mp4)
 - characters: Hình thiết kế nhân vật (GiangNguyetHoi.png)
 - clues: Hình thiết kế manh mối (NgocBoi.png)
+=======
+MediaGenerator 中间层
+
+封装 GeminiClient + VersionManager，提供"调用方无感"的版本管理。
+调用方只需传入 project_path 和 resource_id，版本管理自动完成。
+
+覆盖的 4 种资源类型：
+- storyboards: 分镜图 (scene_E1S01.png)
+- videos: 视频 (scene_E1S01.mp4)
+- characters: 角色设计图 (姜月茴.png)
+- clues: 线索设计图 (玉佩.png)
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 """
 
 import asyncio
@@ -32,12 +45,21 @@ logger = logging.getLogger(__name__)
 
 class MediaGenerator:
     """
+<<<<<<< HEAD
     Lớp trung gian bộ tạo đa phương tiện
 
     Gói gọn GeminiClient + VersionManager, cung cấp quản lý phiên bản tự động.
     """
 
     # Ánh xạ từ loại tài nguyên sang mẫu đường dẫn đầu ra
+=======
+    媒体生成器中间层
+
+    封装 GeminiClient + VersionManager，提供自动版本管理。
+    """
+
+    # 资源类型到输出路径模式的映射
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
     OUTPUT_PATTERNS = {
         "storyboards": "storyboards/scene_{resource_id}.png",
         "videos": "videos/scene_{resource_id}.mp4",
@@ -56,6 +78,7 @@ class MediaGenerator:
         user_id: str = DEFAULT_USER_ID,
     ):
         """
+<<<<<<< HEAD
         Khởi tạo MediaGenerator
 
         Args:
@@ -65,6 +88,17 @@ class MediaGenerator:
             video_backend: Thực thể VideoBackend (tùy chọn, dùng để tạo video)
             config_resolver: Thực thể ConfigResolver, dùng để đọc cấu hình lúc chạy
             user_id: ID người dùng
+=======
+        初始化 MediaGenerator
+
+        Args:
+            project_path: 项目根目录路径
+            rate_limiter: 可选的限流器实例
+            image_backend: 可选的 ImageBackend 实例（用于图片生成）
+            video_backend: 可选的 VideoBackend 实例（用于视频生成）
+            config_resolver: ConfigResolver 实例，用于运行时读取配置
+            user_id: 用户 ID
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         """
         self.project_path = Path(project_path)
         self.project_name = self.project_path.name
@@ -95,6 +129,7 @@ class MediaGenerator:
 
     def _get_output_path(self, resource_type: str, resource_id: str) -> Path:
         """
+<<<<<<< HEAD
         Suy luận đường dẫn đầu ra dựa trên loại tài nguyên và ID
 
         Args:
@@ -106,6 +141,19 @@ class MediaGenerator:
         """
         if resource_type not in self.OUTPUT_PATTERNS:
             raise ValueError(f"Loại tài nguyên không được hỗ trợ: {resource_type}")
+=======
+        根据资源类型和 ID 推断输出路径
+
+        Args:
+            resource_type: 资源类型 (storyboards, videos, characters, clues)
+            resource_id: 资源 ID (E1S01, 姜月茴, 玉佩)
+
+        Returns:
+            输出文件的绝对路径
+        """
+        if resource_type not in self.OUTPUT_PATTERNS:
+            raise ValueError(f"不支持的资源类型: {resource_type}")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
         pattern = self.OUTPUT_PATTERNS[resource_type]
         relative_path = pattern.format(resource_id=resource_id)
@@ -113,11 +161,19 @@ class MediaGenerator:
         try:
             output_path.relative_to(self.project_path.resolve())
         except ValueError:
+<<<<<<< HEAD
             raise ValueError(f"ID tài nguyên không hợp lệ: '{resource_id}'")
         return output_path
 
     def _ensure_parent_dir(self, output_path: Path) -> None:
         """Đảm bảo thư mục cha tồn tại"""
+=======
+            raise ValueError(f"非法资源 ID: '{resource_id}'")
+        return output_path
+
+    def _ensure_parent_dir(self, output_path: Path) -> None:
+        """确保输出目录存在"""
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
     def generate_image(
@@ -131,6 +187,7 @@ class MediaGenerator:
         **version_metadata,
     ) -> tuple[Path, int]:
         """
+<<<<<<< HEAD
         Tạo hình ảnh (với quản lý phiên bản tự động, bao đóng đồng bộ)
 
         Args:
@@ -144,6 +201,21 @@ class MediaGenerator:
 
         Returns:
             Bộ tuýp (output_path, version_number)
+=======
+        生成图片（带自动版本管理，同步包装）
+
+        Args:
+            prompt: 图片生成提示词
+            resource_type: 资源类型 (storyboards, characters, clues)
+            resource_id: 资源 ID (E1S01, 姜月茴, 玉佩)
+            reference_images: 参考图片列表
+            aspect_ratio: 宽高比，默认 9:16（竖屏）
+            image_size: 图片尺寸，默认 1K
+            **version_metadata: 额外元数据
+
+        Returns:
+            (output_path, version_number) 元组
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         """
         return self._sync(
             self.generate_image_async(
@@ -168,6 +240,7 @@ class MediaGenerator:
         **version_metadata,
     ) -> tuple[Path, int]:
         """
+<<<<<<< HEAD
         Tạo hình ảnh không đồng bộ (với quản lý phiên bản tự động)
 
         Args:
@@ -180,13 +253,32 @@ class MediaGenerator:
             **version_metadata: Siêu dữ liệu bổ sung
         Returns:
             Bộ tuýp (output_path, version_number)
+=======
+        异步生成图片（带自动版本管理）
+
+        Args:
+            prompt: 图片生成提示词
+            resource_type: 资源类型 (storyboards, characters, clues)
+            resource_id: 资源 ID (E1S01, 姜月茴, 玉佩)
+            reference_images: 参考图片列表
+            aspect_ratio: 宽高比，默认 9:16（竖屏）
+            image_size: 图片尺寸，默认 1K
+            **version_metadata: 额外元数据
+
+        Returns:
+            (output_path, version_number) 元组
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         """
         from lib.image_backends.base import ImageGenerationRequest, ReferenceImage
 
         output_path = self._get_output_path(resource_type, resource_id)
         self._ensure_parent_dir(output_path)
 
+<<<<<<< HEAD
         # 1. Nếu đã tồn tại, đảm bảo tệp cũ được ghi nhận
+=======
+        # 1. 若已存在，确保旧文件被记录
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         if output_path.exists():
             self.versions.ensure_current_tracked(
                 resource_type=resource_type,
@@ -200,7 +292,11 @@ class MediaGenerator:
         if self._image_backend is None:
             raise RuntimeError("image_backend not configured")
 
+<<<<<<< HEAD
         # 2. Ghi nhận bắt đầu gọi API
+=======
+        # 2. 记录 API 调用开始
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         call_id = await self.usage_tracker.start_call(
             project_name=self.project_name,
             call_type="image",
@@ -214,7 +310,11 @@ class MediaGenerator:
         )
 
         try:
+<<<<<<< HEAD
             # 3. Chuyển đổi định dạng hình ảnh tham chiếu và gọi ImageBackend
+=======
+            # 3. 转换参考图格式并调用 ImageBackend
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             ref_images: list[ReferenceImage] = []
             if reference_images:
                 for ref in reference_images:
@@ -228,7 +328,11 @@ class MediaGenerator:
                         )
                     elif hasattr(ref, "__fspath__") or isinstance(ref, (str, Path)):
                         ref_images.append(ReferenceImage(path=str(ref)))
+<<<<<<< HEAD
                     # Bỏ qua các loại không hỗ trợ như PIL Image
+=======
+                    # PIL Image 等不支持的类型忽略
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
 
             request = ImageGenerationRequest(
                 prompt=prompt,
@@ -240,7 +344,11 @@ class MediaGenerator:
             )
             result = await self._image_backend.generate(request)
 
+<<<<<<< HEAD
             # 4. Ghi nhận gọi thành công
+=======
+            # 4. 记录调用成功
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             await self.usage_tracker.finish_call(
                 call_id=call_id,
                 status="success",
@@ -248,8 +356,13 @@ class MediaGenerator:
                 quality=getattr(result, "quality", None),
             )
         except Exception as e:
+<<<<<<< HEAD
             # Ghi nhận gọi thất bại
             logger.exception("Tạo thất bại (%s)", "image")
+=======
+            # 记录调用失败
+            logger.exception("生成失败 (%s)", "image")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             await self.usage_tracker.finish_call(
                 call_id=call_id,
                 status="failed",
@@ -257,7 +370,11 @@ class MediaGenerator:
             )
             raise
 
+<<<<<<< HEAD
         # 5. Ghi nhận phiên bản mới
+=======
+        # 5. 记录新版本
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         new_version = self.versions.add_version(
             resource_type=resource_type,
             resource_id=resource_id,
@@ -282,6 +399,7 @@ class MediaGenerator:
         **version_metadata,
     ) -> tuple[Path, int, any, str | None]:
         """
+<<<<<<< HEAD
         Tạo video (với quản lý phiên bản tự động, bao đóng đồng bộ)
 
         Args:
@@ -296,6 +414,23 @@ class MediaGenerator:
             **version_metadata: Siêu dữ liệu bổ sung
         Returns:
             Bộ 4 phần tử (output_path, version_number, video_ref, video_uri)
+=======
+        生成视频（带自动版本管理，同步包装）
+
+        Args:
+            prompt: 视频生成提示词
+            resource_type: 资源类型 (videos)
+            resource_id: 资源 ID (E1S01)
+            start_image: 起始帧图片（image-to-video 模式）
+            aspect_ratio: 宽高比，默认 9:16（竖屏）
+            duration_seconds: 视频时长，可选 "4", "6", "8"
+            resolution: 分辨率，默认 "1080p"
+            negative_prompt: 负面提示词
+            **version_metadata: 额外元数据
+
+        Returns:
+            (output_path, version_number, video_ref, video_uri) 四元组
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         """
         return self._sync(
             self.generate_video_async(
@@ -324,6 +459,7 @@ class MediaGenerator:
         **version_metadata,
     ) -> tuple[Path, int, any, str | None]:
         """
+<<<<<<< HEAD
         Tạo video không đồng bộ (với quản lý phiên bản tự động)
 
         Args:
@@ -338,11 +474,32 @@ class MediaGenerator:
             **version_metadata: Siêu dữ liệu bổ sung
         Returns:
             Bộ 4 phần tử (output_path, version_number, video_ref, video_uri)
+=======
+        异步生成视频（带自动版本管理）
+
+        Args:
+            prompt: 视频生成提示词
+            resource_type: 资源类型 (videos)
+            resource_id: 资源 ID (E1S01)
+            start_image: 起始帧图片（image-to-video 模式）
+            aspect_ratio: 宽高比，默认 9:16（竖屏）
+            duration_seconds: 视频时长，可选 "4", "6", "8"
+            resolution: 分辨率，默认 "1080p"
+            negative_prompt: 负面提示词
+            **version_metadata: 额外元数据
+
+        Returns:
+            (output_path, version_number, video_ref, video_uri) 四元组
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         """
         output_path = self._get_output_path(resource_type, resource_id)
         self._ensure_parent_dir(output_path)
 
+<<<<<<< HEAD
         # 1. Nếu đã tồn tại, đảm bảo tệp cũ được ghi nhận
+=======
+        # 1. 若已存在，确保旧文件被记录
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         if output_path.exists():
             self.versions.ensure_current_tracked(
                 resource_type=resource_type,
@@ -353,7 +510,11 @@ class MediaGenerator:
                 **version_metadata,
             )
 
+<<<<<<< HEAD
         # 2. Ghi nhận bắt đầu gọi API
+=======
+        # 2. 记录 API 调用开始
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         try:
             duration_int = int(duration_seconds) if duration_seconds else 8
         except (ValueError, TypeError):
@@ -404,7 +565,11 @@ class MediaGenerator:
             video_ref = None
             video_uri = result.video_uri
 
+<<<<<<< HEAD
             # Theo dõi sử dụng với thông tin nhà cung cấp
+=======
+            # Track usage with provider info
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             await self.usage_tracker.finish_call(
                 call_id=call_id,
                 status="success",
@@ -414,8 +579,13 @@ class MediaGenerator:
                 generate_audio=result.generate_audio,
             )
         except Exception as e:
+<<<<<<< HEAD
             # Ghi nhận gọi thất bại
             logger.exception("Tạo thất bại (%s)", "video")
+=======
+            # 记录调用失败
+            logger.exception("生成失败 (%s)", "video")
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
             await self.usage_tracker.finish_call(
                 call_id=call_id,
                 status="failed",
@@ -423,7 +593,11 @@ class MediaGenerator:
             )
             raise
 
+<<<<<<< HEAD
         # 5. Ghi nhận phiên bản mới
+=======
+        # 5. 记录新版本
+>>>>>>> 7101250fbd452cd6228fdd93b27d061dd856a3e3
         new_version = self.versions.add_version(
             resource_type=resource_type,
             resource_id=resource_id,
